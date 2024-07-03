@@ -1,0 +1,2836 @@
+
+# *********************************************
+# ****************** Clock Data Analyser ******
+
+
+# to tune this code in your local PC use the follwoing command **
+# streamlit run .\clk_data_checking.py --server.port 8888
+
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta, date, time
+import warnings
+import numpy as np
+import io
+from streamlit_option_menu import option_menu
+import datetime
+from io import StringIO
+import plotly.express as px
+from dateutil.parser import parse
+from datetime import datetime
+import matplotlib.pyplot as plt
+from PIL import Image
+import json
+from streamlit_plotly_events import plotly_events
+
+st.set_page_config(page_title="Clock Data Checking", page_icon=":stopwatch:", layout="wide")
+st.markdown('<style>div.block-container{padding-top:1rem;}</style>', unsafe_allow_html=True)
+st.title(":clock10: Clock Data Checking")
+
+
+
+def validate_timestamp_column(column):
+    # st.write(f"column: {column}")
+    if column.empty:
+        st.write("Time stamp column is EMPTY")
+        return False
+    
+    sample_value = column.dropna().iloc[0]  # Get the first non-null value for testing
+    # st.write(f"sample value: {sample_value}")
+    # st.write(type(sample_value))
+    # Various expected datetime formats common in our data as time stamps
+    datetime_formats = [
+        '%Y-%m-%d %H:%M:%S',  # Year-month-day Hour:Minute:Second
+        '%H:%M:%S',  # Hour:Minute:Second only
+        '%Y-%m-%d',  # Year-month-day only
+        '%d-%m-%Y'   # Date-month-Year
+    ]
+
+    # Attempt to handle MJD or numeric timestamp formats first
+    if isinstance(sample_value, (int, float, np.int64, pd.Timestamp)):
+        # st.write("Its a float or int data")
+        try:
+            numeric_value = float(sample_value)
+            # Assuming the sample value is in MJD format or similar
+            if 40000 <= numeric_value <= 90000:  # Typical MJD range check
+                
+                return True
+        except ValueError:
+            # The value is not a float, so it could be a string representation of a date
+            pass
+
+        # Fallback: Try parsing as a string date if not a recognizable MJD
+        # try:
+        #     parse(sample_value)
+        #     return True  # Parsing succeeded, it's a valid date string
+        # except (ValueError, TypeError):
+        #     return False  # Parsing failed, not a valid date string
+    
+    if isinstance(sample_value, str):
+        # Remove commas from the string
+        # st.write("Its a string data")
+        sample_value_cleaned = sample_value.replace(',', '')
+        st.write(sample_value_cleaned)
+        # Check for MJD string with decimal values
+        try:
+            numeric_value = float(sample_value_cleaned)
+            # st.write(f"Numeric value cleaned: {numeric_value}")
+            if 40000 <= numeric_value <= 90000:  # Typical MJD range check
+                return True
+        except ValueError:
+            pass  # Continue to next checks
+
+        # Check for standard datetime formats
+        for fmt in datetime_formats:
+            try:
+                datetime.strptime(sample_value_cleaned, fmt)
+                return True  # Valid datetime format found
+            except ValueError:
+                continue  # Try next format
+    st.write("No valid format found")
+    return False  # No valid format found
+
+
+def validate_value_column(column):
+    try:
+        pd.to_numeric(column.dropna(), errors='raise')  # Attempt to convert the entire column to numeric types
+        return True
+    except (ValueError, TypeError):
+        return False
+
+# Define a class to represent each column
+class DataColumn:
+    def __init__(self, index, column_type):
+        self.index = index
+        self.column_type = column_type  # 'timestamp' or 'value'
+
+# Create DataColumn objects for each column index
+timestamp_column = DataColumn(0, 'timestamp')
+value_column = DataColumn(1, 'value')
+
+
+#     return True  # All selected columns are valid
+
+def validate_column_selections(df):
+    # Since df only contains the two user-selected columns, we know their indices are 0 and 1
+    # We can validate directly without needing user provided indices.
+
+    # Validate timestamp column (assumed to always be the first column in df)
+    if not validate_timestamp_column(df.iloc[:, 0]):
+        st.error("The selected timestamp column does not contain valid timestamp data.")
+        return False
+    
+    # Validate the value column (assumed to always be the second column in df)
+    if not validate_value_column(df.iloc[:, 1]):
+        st.error("The selected value column does not contain valid numerical data.")
+        return False
+
+    return True  # Both columns are valid
+
+
+def convert_to_nanoseconds(value, unit, signal_freq_MHz):
+    
+    """Converts the given TIME / Frequency data value from the specified unit to nanoseconds."""
+    
+    # Check if this is a frequency to time conversion scenario
+    if signal_freq_MHz != 0:
+        # First convert the input frequency difference to a period in seconds (T = 1 / f)
+        if unit == 'Hz':
+            frequency_hz = value  # Directly use the value in Hz
+        elif unit == 'mHz':
+            frequency_hz = value / 1_000  # Convert mHz to Hz
+        elif unit == 'µHz':
+            frequency_hz = value / 1_000_000  # Convert µHz to Hz
+        elif unit == 'nHz':
+            frequency_hz = value / 1_000_000_000  # Convert nHz to Hz
+        else:
+            return None  # Unknown frequency unit
+        
+        # Assuming signal_freq_MHz is the base frequency and value is the difference
+        total_frequency_hz = signal_freq_MHz * 1_000_000 + frequency_hz
+        period_seconds = 1 / total_frequency_hz  # Calculate the period in seconds
+        return period_seconds * 1_000_000_000  # Convert period from seconds to nanoseconds
+
+    # Handle direct time unit conversions when no signal frequency is specified
+    else:
+        if unit == 'ns':
+            return value  # No conversion needed for nanoseconds
+        elif unit == 'microseconds':
+            return value * 1_000  # Convert microseconds to nanoseconds
+        elif unit == 'ms':
+            return value * 1_000_000  # Convert milliseconds to nanoseconds
+        elif unit == 's':
+            return value * 1_000_000_000  # Convert seconds to nanoseconds
+        else:
+            return None  # Unknown time unit
+
+
+# Function to read and combine clock data while ignoring headers and special symbols
+
+def process_file(file, timestamp_col_index, value_col_index, data_type, data_scale, frequency):
+    # st.write(f"file: {file}")
+    # st.write(f"time column index: {timestamp_col_index}")
+    # st.write(f"value colm index: {value_col_index}")
+    # Convert uploaded file content directly to StringIO
+    file.seek(0)
+    content = StringIO(file.read().decode('utf-8'))
+   
+    lines = content.readlines()
+    
+    # Identify the first valid data row index
+    first_valid_index = next((idx for idx, line in enumerate(lines)
+                              if not line.lstrip().startswith(('#', '<', '"', '@')) and line.strip()), None)
+
+    if first_valid_index is None:
+        st.error(f"No valid data found in file {file.name}.")
+        return None  # Return None if no valid data is found
+
+    # Read the file into a pandas DataFrame from the first valid index sep='\s+'
+    if timestamp_col_index != 'NA':
+        try:
+            df = pd.read_csv(StringIO(''.join(lines[first_valid_index:])), sep='\s+',
+                            header=None, engine='python', usecols=[timestamp_col_index, value_col_index])# dtype={timestamp_col_index: str, value_col_index: float})
+            # st.write(df.head(10))  # Show the first few rows to verify structure
+        except Exception as e:
+                st.error("Failed to read time stamp data from the assigned column ")
+                return None
+    else: 
+        try:
+            df = pd.read_csv(StringIO(''.join(lines[first_valid_index:])), sep='\s+',
+                            header=None, engine='python', usecols=[value_col_index])
+            
+            # Generate the timestamp values starting from 1 to the length of the values column
+            df['Timestamp'] = range(1, len(df) + 1)
+            # Reorder columns to place 'Timestamp' first
+            df = df[['Timestamp', value_col_index]]
+            
+            # st.write(df.head(10))  # Show the first few rows to verify structure
+        except Exception as e:
+                st.error("Failed to read the measurements from the assigned DATA column")
+                return None       
+
+    if df.empty:
+        st.error(f"The file {file.name} does not have enough columns based on the selected indices.")
+        return None  # Return None if the DataFrame is empty
+
+    if len(df.columns) != 2:# and timestamp_col_index != 'NA':
+        st.error(f"Timestamp and value columns cannot be the same. Please select different columns.")
+        return None  # Return None if column count mismatch
+
+    # Assign column names based on user input
+    if timestamp_col_index != 'NA':
+        column_names = [None, None]  # Initialize list for column names
+        column_names[0] = 'Timestamp' if timestamp_col_index < value_col_index else 'Value'
+        column_names[1] = 'Value' if timestamp_col_index < value_col_index else 'Timestamp'
+    else:
+        column_names = ['Timestamp', 'Value']
+        
+        # column_names = [None]  # Initialize list for column names
+        # column_names[0] = 'Timestamp' if timestamp_col_index < value_col_index else 'Value'
+        # column_names[0] = 'Value' #if timestamp_col_index < value_col_index else 'Timestamp'
+
+    df.columns = column_names  # Assign correct names based on user selection
+    # st.write(df)
+    # st.write(df['Timestamp'])
+    # Convert 'Timestamp' column to integers if necessary
+    if 'Timestamp' in df.columns:
+        # df['Timestamp'] = df['Timestamp'].apply(lambda x: int(str(x).replace(',', '')))
+        df['Timestamp'] = df['Timestamp'].apply(lambda x: int(float(str(x).replace(',', ''))))
+        # st.write("Timestamp column after conversion:")
+        # st.write(df['Timestamp'].head(10).apply(lambda x: f"{x}"))  # Display the first few timestamps for debugging without commas
+  
+    # Validate columns
+    if timestamp_col_index != 'NA':
+        # st.write("Timestamp column:")
+        # st.write(df['Timestamp'].head(10))  # Display the first few timestamps for debugging
+        # st.write(df['Timestamp'])
+        if not validate_timestamp_column(df['Timestamp']):
+            st.error(f"Invalid timestamp data in selected column {timestamp_col_index } in file {file.name}.")
+            return None  # Return None if validation fails
+    
+    # st.write(df['Value'])
+    if not validate_value_column(df['Value']):
+        st.error(f"Invalid value data in file {file.name}.")
+        return None  # Return None if validation fails
+    
+    # if data_type == 'Time Data':
+    #     if data_scale = 
+
+
+    # else: # Data id of Frequency Data
+    #     if frequency: # if its 5 or 10 or 100 MHz
+
+
+    #     if data_scale
+
+
+    return df # Return the processed DataFrame if everything is fine
+
+
+# Function to check for column consistency
+def check_column_consistency(file):
+    try:
+        # Assuming the file is decoded as 'utf-8', which might need to be adjusted based on the file encoding
+        content = StringIO(file.getvalue().decode('utf-8'))
+        sample_df = pd.read_csv(content, sep='\s+', nrows=25)  # Using regex to handle multiple spaces
+        num_columns = len(sample_df.columns)
+        return num_columns, None
+    except Exception as e:
+        return None, e
+    
+
+def process_inputs(files):
+    
+    data_frames = {}
+    if not files:
+        st.error("Please upload the files.")
+        return data_frames
+    # Reset the file read pointer and read the data
+    # files.seek(0) #UploadedFile object in Streamlit has various attributes including .name, .size, .type, 
+    # Extract and store filenames, then update the session state
+    valid_filenames = [file.name for file in files]
+    st.session_state.input_data['files_uploaded'] = ', '.join(valid_filenames) if valid_filenames else 'NA'
+    
+    num_columns, error = check_column_consistency(files[0])
+    if error:
+        st.error(f"An error occurred in reading the file data: {files[0].name} {error}")
+        return data_frames
+
+    if num_columns is None:
+        st.error("Unable to determine the number of columns in the file.")
+        return data_frames
+    
+    if st.session_state.timestamp_col != 'NA':
+        st.session_state.timestamp_col = st.session_state.timestamp_col -1
+    
+
+    # Process files based on the type of file combination selected
+    if st.session_state.file_combo == 'Single/ Mutiple files of same clock':
+        combined_df = pd.DataFrame()
+        # st.write(st.session_state.files_uploaded)
+        for file in files:
+            df = process_file(file, st.session_state.timestamp_col, st.session_state.data_col-1, st.session_state.data_type, st.session_state.order_of_data, st.session_state.freq_scale)
+            if df is not None:
+                # combined_df = pd.concat([combined_df, df], ignore_index=True)
+                df.iloc[:, 1] = df.iloc[:, 1].apply(convert_to_nanoseconds, args=(st.session_state.order_of_data, st.session_state.freq_scale))
+                combined_df = pd.concat([combined_df, df], ignore_index=True)
+        if not combined_df.empty:
+            data_frames['combined'] = combined_df
+    else:  # Each file is a different clock
+        # st.write(st.session_state.files_uploaded)
+        for file in files:
+            df = process_file(file, st.session_state.timestamp_col, st.session_state.data_col-1,st.session_state.data_type, st.session_state.order_of_data, st.session_state.freq_scale)
+            if df is not None:
+                df.iloc[:, 1] = df.iloc[:, 1].apply(convert_to_nanoseconds, args=(st.session_state.order_of_data, st.session_state.freq_scale))
+                file_key = file.name.split('.')[0]  # Using file name without extension as the key
+                data_frames[file_key] = df
+    # st.write(data_frames)
+    return data_frames
+    
+
+
+
+# Define a function to create an empty DataFrame if not already in session state
+def initialize_display_df():
+    if 'df_display' not in st.session_state or st.session_state.df_display.empty:
+        st.session_state.df_display = pd.DataFrame({
+            "Files uploaded": pd.Series([], dtype=str),
+            "Sample_data": pd.Series([], dtype=str),
+            "Choose Clock": pd.Series([], dtype=bool),
+            "Clock Name": pd.Series([], dtype=str),
+        })
+
+# Define a default state or reset state function
+def initialize_state():
+    """Initialize or reset the session state."""
+    st.session_state.input_data = {
+        'files_uploaded': 'NA',
+        'data_type': 'NA',
+        'units_data': 'NA',
+        'signal_frequency': 'NA',
+        'file_combo': 'NA',
+        'timestamp_col': 'NA',
+        'data_col': 'NA',
+        'tau0': 'NA'
+    }
+    st.session_state.clks_data = False
+    st.session_state.proceed = False  # Reset the proceed flag
+    st.session_state.data_type = None  # Initialize data_type
+    st.session_state.valid_filenames = [] # List of valid file names 
+    st.session_state.files_uploaded = None
+    st.session_state.data_loaded = False
+    initialize_display_df()  # Initialize the empty DataFrame when the app starts
+    initialize_out_display()
+    st.session_state.clk_sel = False # Clock selected from the raw data 
+    st.session_state.total_data = {}
+    st.session_state.data = {}
+    st.session_state.clk_to_analyse= pd.DataFrame()
+    st.session_state.clk_filename = None
+    st.session_state.selected_points = []
+    st.session_state.trend_selection = {}
+    # st.session_state.checkbox_states = []
+    st.session_state['filtered_data'] = pd.DataFrame(columns=["Timestamp", "Value"])
+    st.session_state['clock_ranges'] = {}
+    st.session_state['clk_data_full'] = pd.DataFrame(columns=["Timestamp", "Value"])
+    st.session_state['offset_selection'] = {}
+    st.session_state['total_data'] = {}
+    st.session_state['clk_sel'] = False
+    st.session_state.trend_slopes = {}
+    st.session_state.trend_intercepts = {}
+    st.session_state.trend_coeffs = {}
+    st.session_state['processed_data'] = pd.DataFrame()
+    st.session_state.detrended_data = {}
+    st.session_state.offset_removed_data = st.session_state.processed_data.copy()
+    st.session_state.initial_offset_removed_data = st.session_state.processed_data.copy()
+    st.session_state.outlier_selection= {}
+    st.session_state.stability_results = {
+        "ADEV": {},
+        "MDEV": {},
+        "OADEV": {},
+        "TDEV": {}
+    }
+
+# Define a function to create an empty DataFrame if not already in session state
+def initialize_out_display():
+    if 'out_display' not in st.session_state or st.session_state.out_display.empty:
+        st.session_state.out_display = pd.DataFrame({
+            "Files uploaded": pd.Series([], dtype=str),
+            "Data Type": pd.Series([], dtype=str),
+            "Clock Name": pd.Series([], dtype=str),
+            "Data Range": pd.Series([], dtype=str),
+            "Detrended": pd.Series([], dtype=str),
+            "Offset Removed": pd.Series([], dtype=str),
+            "Outlier Filtered": pd.Series([], dtype=str),
+            "Smoothed": pd.Series([], dtype=str),
+            "ADEV": pd.Series([], dtype=object),
+            "MDEV": pd.Series([], dtype=object),
+            "OADEV": pd.Series([], dtype=object),
+            "TDEV": pd.Series([], dtype=object),
+        })
+
+
+# Function to initialize data for each clock and tab
+def initialize_clock_data(clock_name):
+    tabs = ["raw_data", "data_range", "detrend", "offset", "outlier", "smoothing", "stability"]
+    if clock_name not in st.session_state.data:
+        st.session_state.data[clock_name] = {tab: pd.DataFrame() for tab in tabs}
+
+def get_latest_data(clock_name, current_tab):
+    tabs_order = ['raw_data', 'data_range', 'detrend', 'offset', 'outlier', 'smoothing', 'stability']
+    current_index = tabs_order.index(current_tab)
+    for tab in tabs_order[:current_index + 1][::-1]:
+        if not st.session_state.data[clock_name][tab].empty:
+            return st.session_state.data[clock_name][tab]
+    return pd.DataFrame(columns=["Timestamp", "Value"])  # Default empty DataFrame
+
+# Function to update action
+def update_action(clock_name, action, value):
+    # Check if the clock already exists in the DataFrame
+    idx = st.session_state.out_display[st.session_state.out_display['Clock Name'] == clock_name].index
+   
+    if not idx.empty:
+        idx = idx[0]
+        # Update the specific action for the existing clock entry
+        st.session_state.out_display.at[idx, action] = value
+    else:
+        # Find the file name corresponding to the clock name using the mapping
+        matching_rows = st.session_state.df_display[st.session_state.df_display['Clock Name'] == clock_name]
+        if not matching_rows.empty:
+            file_uploaded = matching_rows['Files uploaded'].values[0]
+        else:
+            file_uploaded = 'NA'  # Handle the case where the clock name is not found
+
+         # Initialize new row with 'NA' for all actions except the one being updated
+        new_row = {
+            "Files uploaded": file_uploaded,
+            "Data Type": st.session_state.input_data.get('data_type', 'NA'),
+            "Clock Name": clock_name,
+            "Data Range": 'NA',
+            "Detrended": 'NA',
+            "Offset Removed": 'NA',
+            "Outlier Filtered": 'NA',
+            "Smoothed": 'NA',
+            "ADEV": 'NA',
+            "MDEV": 'NA',
+            "OADEV": 'NA',
+            "TDEV": 'NA',
+        }
+        new_row[action] = value
+        
+        # Append the new row to the DataFrame
+        st.session_state.out_display = pd.concat([st.session_state.out_display, pd.DataFrame([new_row])], ignore_index=True)
+
+
+
+def update_stability_results(clock_name, analysis_type, tau_values, dev_values):
+    max_length = max(len(tau_values), len(dev_values))
+    
+    # Convert lists to numpy arrays
+    tau_values = np.array(tau_values)
+    dev_values = np.array(dev_values)
+    
+    # Pad the arrays with np.nan
+    tau_values_padded = np.pad(tau_values, (0, max_length - len(tau_values)), constant_values=np.nan)
+    dev_values_padded = np.pad(dev_values, (0, max_length - len(dev_values)), constant_values=np.nan)
+
+    if 'stability_results' not in st.session_state:
+        st.session_state.stability_results = {}
+    if analysis_type not in st.session_state.stability_results:
+        st.session_state.stability_results[analysis_type] = {}
+    st.session_state.stability_results[analysis_type][clock_name] = pd.DataFrame({
+        "Tau (s)": tau_values_padded,
+        f"{analysis_type} {clock_name}": dev_values_padded
+    })
+
+
+
+def format_scientific(value):
+    if isinstance(value, float):
+        return f"{value:.2e}"
+    return value
+
+def transform_and_display():
+    if 'out_display' not in st.session_state:
+        return
+
+    # Extract basic info columns and prepare the base DataFrame
+    basic_info = st.session_state.out_display.drop(columns=["ADEV", "MDEV", "OADEV", "TDEV"]).set_index('Clock Name').T
+    basic_info.insert(0, '', basic_info.index)
+
+    # Initialize a list to collect final DataFrame rows
+    final_rows = [basic_info.columns.tolist()] + basic_info.values.tolist()
+
+    # Process each stability type and append results
+    for analysis_type in ["ADEV", "MDEV", "OADEV", "TDEV"]:
+        # Append the analysis type row
+        analysis_done_row = [f"{analysis_type} Analysis, Done"] + [""] * (basic_info.shape[1] - 1)
+        final_rows.append(analysis_done_row)
+
+        # Collect stability results
+        stability_results = []
+        max_length = 0
+        for clock in basic_info.columns[1:]:
+            if clock in st.session_state.stability_results[analysis_type]:
+                result_df = st.session_state.stability_results[analysis_type][clock]
+                stability_results.append(result_df)
+                max_length = max(max_length, len(result_df))
+            else:
+                stability_results.append(pd.DataFrame(columns=["Tau (s)", f"{analysis_type} {clock}"]))
+
+        # Append Tau values and results in rows
+        for i in range(max_length):
+            row_data = []
+            for result_df in stability_results:
+                if i < len(result_df):
+                    row_data.append(result_df.iloc[i, 0])  # Tau (s) value
+                    row_data.append(result_df.iloc[i, 1])  # Stability value
+                else:
+                    row_data.extend(["", ""])
+            final_rows.append([""] + row_data)  # Add an empty first cell to match the final DataFrame structure
+
+    # Ensure all rows have the same number of columns
+    max_columns = max(len(row) for row in final_rows)
+    final_rows = [row + [""] * (max_columns - len(row)) for row in final_rows]
+
+    # Create a DataFrame from the final rows
+    final_df = pd.DataFrame(final_rows)
+
+    # Format the scientific values
+    final_df = final_df.applymap(format_scientific)
+
+    # Display the final DataFrame
+    st.dataframe(final_df, use_container_width=True)
+
+    # Apply custom CSS for sticky header
+    st.markdown(
+        """
+        <style>
+        .stDataFrame thead tr th {
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 1;
+        }
+        .stDataFrame tbody th {
+            position: sticky;
+            left: 0;
+            background: white;
+            z-index: 1;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# Main Streamlit app
+def main():
+    
+    # # Initialize or reset session state on first load or as needed
+    # if 'data_type' not in st.session_state:
+    #     initialize_state()
+    
+    # if 'input_data' not in st.session_state or 'data_type' not in st.session_ state:
+    #     initialize_state()  # Ensure everything is initialized
+    if 'data_type' not in st.session_state or 'input_data' not in st.session_state:
+        initialize_state()
+   
+    # run_once = 0
+    # Create a 6-column layout
+    container1 = st.container(border=True)
+    container1.subheader("Input configuration ")
+    
+    with container1:
+
+        # col1, col2, col3, col4, col5, col6 = st.columns(6)
+        # normal_width = (100 - 5.25) / 5  # Subtract 5.25% instead of 5 to balance the extra 5% for col5
+        # col5_width = normal_width + 5.25
+
+        # # Convert these into a list of proportions
+        # widths = [normal_width, normal_width, normal_width, normal_width, col5_width, normal_width]
+        # Create 6 columns with equal width
+        col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1.1, 1])  # Each number represents an equal share of the width
+
+        # col1, col2, col3, col4, col5, col6 = st.columns(widths)
+         # Data types available for selection
+        data_types = ['Phase/Time Data', 'Fractional Frequency', 'Frequency Data']
+        
+        # First column for file upload inside a popover
+        with col1:
+            # st.write("**Upload your files** 👇")
+            with st.popover("Upload Data Files 📁", help="Click here to upload files for processing"):
+                with st.form("file_upload_form", clear_on_submit=True):
+                    files_uploaded = st.file_uploader("**Upload the clock data files**", accept_multiple_files=True)
+                    submitted1 = st.form_submit_button("Submit")
+                    if submitted1 and files_uploaded:
+                        st.session_state.files_uploaded = files_uploaded
+                       # Extract filenames and store them in a list
+                        filenames = [file.name for file in files_uploaded]
+                        # Append the filenames
+                        for filename in filenames:
+                            st.session_state.valid_filenames.append(filename)
+                        if st.session_state.valid_filenames != 0 :
+                            st.write(f"Files uploaded: {st.session_state.valid_filenames}")
+                            st.success("Files successfully uploaded.")
+                            st.session_state.input_data = {'files_uploaded': st.session_state.valid_filenames}
+
+        with col2:
+            # st.write("**Select the type of Data** 👇")
+            # Popover for Time Data settings
+            with st.popover("Input Data settings :alarm_clock:", help="Choose the data you are trying to process"):
+                # st.session_state.data_type = st.radio("Select the type of Data you have:", ['Time Data', 'Frequency Data'])
+    
+                # data_type = ['Time Data', 'Frequency Data']
+                # st.session_state.data_type = st.radio("Select the type of Data you have:", data_type, index=0 if st.session_state.data_type not in data_type else data_type.index(st.session_state.data_type))
+               
+
+                st.session_state.data_type = st.radio(
+                "Select the type of Data you have:",
+                data_types,
+                index=0 if st.session_state.data_type not in data_types else data_types.index(st.session_state.data_type))
+            
+                if st.session_state.data_type == 'Phase/Time Data':
+                    st.session_state.order_of_data = st.selectbox("**Select the units of your data (s)**",
+                                            ('s','ns','ps','ms', 'µs'),
+                                            help="Choose the unit that best describes your data's time resolution.")
+                    st.session_state.freq_scale = 0 # If it time data, this is used just as a flag indicator
+                    st.session_state.input_data.update({
+                    'data_type': st.session_state.data_type,
+                    'units_data': st.session_state.order_of_data,
+                    'signal_frequency': st.session_state.freq_scale })
+            # # Popover for Frequency Data settings
+            # with st.popover("Frequency Data Settings :radio:", help="Configure settings for frequency data processing"):
+                if st.session_state.data_type == 'Frequency Data':
+                    st.session_state.freq_scale = st.select_slider("**Select the frequency of the signal (MHz)**",
+                                                options=[0, 5, 10, 100],
+                                                help="Select the base frequency scale in MHz.")
+                    st.session_state.order_of_data = st.selectbox("**Select the units of your data (Hz)**",
+                                                    ('mHz', 'Hz','µHz','nHz'),
+                                                    help="Adjust the frequency scale by specifying the power of ten.")
+                    st.session_state.input_data.update({
+                    'data_type': st.session_state.data_type,
+                    'units_data': st.session_state.order_of_data,
+                    'signal_frequency': st.session_state.freq_scale })
+
+                if st.session_state.data_type == 'Fractional Frequency':
+                    st.warning("Not Operational yet")
+        
+        # File combination 
+        with col3:
+            # st.write("**Select the file combination** 👇")
+            with st.popover("File combination  :link:", help="Choose how you are combining your files"):
+                st.session_state.file_combo = st.radio("Select the file combination:", ['Each file is a different clock','Single/ Mutiple files of same clock'],help="Choose the file arrangement you have")
+                st.session_state.input_data.update({'file_combo': st.session_state.file_combo})
+        # Data Format 
+        with col4:
+            # st.write("**Data Format** 👇")
+            with st.popover("Data Format :gear:", help="Select the timestamp and the data columns in your data"):
+                timestamp_help_text = (
+                    "If your data does not have a timestamp column, choose 'NA'. "
+                    "Acceptable Timestamp formats include: "
+                    "- MJD (e.g., 56032, 56032.1234); "
+                    "- '%Y-%m-%d %H:%M:%S' (Year-month-day Hour:Minute:Second); "
+                    "- '%H:%M:%S' (Hour:Minute:Second only); "
+                    "- '%Y-%m-%d' (Year-month-day only)."
+                )
+                value_help_text = "Data should be numerical or exponential (e.g., 3.14, 2.17e-5)."
+               
+                st.session_state.timestamp_col = st.selectbox("**Select the TIMESTAMP column**", options=[1,'NA', 2, 3, 4, 5, 6, 7, 8, 9, 10], help=timestamp_help_text)
+                st.session_state.data_col = st.selectbox("**Select the DATA column**", options=[2, 3, 1, 4, 5, 6, 7, 8, 9, 10], help=value_help_text)
+                st.session_state.input_data.update({'timestamp_col': st.session_state.timestamp_col})
+                st.session_state.input_data.update({'data_col': st.session_state.data_col})
+        #  
+        with col5:
+            # st.write("**Measurement Interval**")
+            with st.popover("Measurement Interval :straight_ruler:", help="Select the measurement interval in seconds. If the required option is not available in the menu enter it manually selecting OTHER"):
+                Meas_int_help_text = "Measurement interval in seconds. You can choose OTHER to enter manually" 
+                st.session_state.tau0 = st.selectbox("**Measurement Interval [s]**", options=[1, 10, 100, 3600, 86400, 'other'], help=Meas_int_help_text)
+                
+                if st.session_state.tau0 == 'other':
+                    st.session_state.tau0 = st.number_input("Measurement Interval [s]")
+                
+                st.session_state.input_data.update({'tau0': st.session_state.tau0})
+
+        with col6:
+            # st.write("**Process/Analyse**")
+            # proceed = st.button("Plot_data")
+            if st.button("Proceed"):
+                st.session_state.proceed = True
+                # clks_data = process_inputs(files_uploaded)
+                # st.session_state.clks_data = process_inputs(files_uploaded)#, time_column, frequency_column, type_of_data, st.session_state.order_of_data)
+
+
+   # Second container 
+    # container2 = st.container(border=True)
+    # with container2:
+    # col1, sp1, col2, sp2, col3 = st.columns([2,0.1,12,0.1,2])  # Adjust the ratio as needed
+    col1, sp1, col2, = st.columns([2,0.1,12])  # Adjust the ratio as needed
+    with col1:
+        container2 = st.container(border=True)
+        # container2.subheader("Overview of the input settings")
+        # container2.write("**Overview of the input settings**")
+        container2.markdown("**Overview of the input settings**")
+        
+        # Check if the proceed flag has been set before updating the display
+        if st.session_state.proceed or st.session_state.data_loaded:
+            # Use current session state data
+            data_dict = {
+                'Files uploaded': st.session_state.input_data['files_uploaded'],
+                'Type of Data': st.session_state.input_data['data_type'],
+                'Units of data': st.session_state.input_data['units_data'],
+                'Signal frequency': st.session_state.input_data['signal_frequency'],
+                'File combo': st.session_state.input_data['file_combo'],
+                'Timestamp column': st.session_state.input_data['timestamp_col'],
+                'Data column': st.session_state.input_data['data_col'],
+                'Measurement Interval (s)': st.session_state.input_data['tau0']
+            }
+        else:
+            # Use placeholders or NA values if the proceed flag has not been set
+            data_dict = {key.replace('_', ' ').capitalize(): 'NA' for key in st.session_state.input_data.keys()}
+
+        # Create a DataFrame for display
+        # data_df = pd.DataFrame([data_dict]).T  # Creating a DataFrame from a single row dictionary
+        for key, value in data_dict.items():
+            container2.markdown(f"**{key}:** {value}")
+
+        # Display data in a table format
+        # container2.table(data_df)
+        # # container2.dataframe(data_df, index=False)
+        # html = data_df.to_html(index=True)
+        # container2.write(html, unsafe_allow_html=True)           
+    
+    with col2:
+        container3 = st.container(border=True)
+        # container3.markdown(
+        #     "<h1 style='text-align: center;'>Main Display or Analysis Content Goes Here</h1>", 
+        #     unsafe_allow_html=True)
+        # container3.subheader("Main Display or Analysis Content Goes Here")
+        
+        # tab1, tab2, tab3 = st.tabs(["Raw Data", "Analyse", "Out come"])
+        # The order of the functinality shall be raw_data -> data_range -> detrend -> offset -> outlier -> smoothing -> stability.
+        st.session_state.selected = option_menu(
+            menu_title = None,
+            options = ["Raw Data", "Data Range","Detrend", "Offset", "Outlier", "Smoothing", "Stability", "Out come"],
+            icons=["database-fill-up", "arrows-collapse-vertical", "alt","graph-up", "activity", "boxes", "check-circle"],
+            default_index =0,
+            orientation= "horizontal",
+            styles={
+            "container": {"padding": "0!important", "background-color": "#fafafa"},
+            "icon": {"color": "orange", "font-size": "25px"}, 
+            "nav-link": {"font-size": "15px", "text-align": "centre", "margin":"0px", "--hover-color": "#eee"},
+            "nav-link-selected": {"background-color": "#2d3142"},}
+        )
+        
+        # Initialize session state
+        if 'clk_data_full' not in st.session_state:
+            # st.session_state['clk_data_full'] = df
+            # st.session_state['filtered_data'] = df
+            st.session_state['is_time_type'] = False
+        
+        # Function to parse timestamps
+        def parse_timestamp(timestamp):
+            try:
+                return float(timestamp)
+            except ValueError:
+                pass
+            datetime_formats = ['%Y-%m-%d %H:%M:%S', '%H:%M:%S']
+            for fmt in datetime_formats:
+                try:
+                    dt = datetime.strptime(timestamp, fmt)
+                    if fmt == '%H:%M:%S':
+                        today = datetime.today().date()
+                        return datetime.combine(today, dt.time())
+                    return dt
+                except ValueError:
+                    continue
+            raise ValueError(f"Unsupported timestamp format: {timestamp}")
+
+        # Function to calculate x-intervals
+        def x_interval(data):
+            x = [parse_timestamp(ts) for ts in data['Timestamp']]
+            dx = []
+            for i in range(1, len(x)):
+                try:
+                    if isinstance(x[i], float) and isinstance(x[i-1], float):
+                        diff = x[i] - x[i-1]
+                    elif isinstance(x[i], datetime) and isinstance(x[i-1], datetime):
+                        diff = (x[i] - x[i-1]).total_seconds()
+                    else:
+                        raise TypeError("Mismatch in timestamp types or unsupported type")
+                    
+                    if diff != 0:
+                        dx.append(diff)
+                except TypeError as e:
+                    print(f"TypeError: {e}")
+                    continue  # Skip this interval if there is a type error
+
+            # Ensure that x and dx have the same length
+            x = x[1:len(dx) + 1]
+            st.write(x)
+
+            return x, dx
+
+        # Function to filter data
+        def update_filtered_data(start, end):
+            filtered_data = st.session_state['clk_data_full'][
+                (st.session_state['clk_data_full']["Timestamp"] >= start) &
+                (st.session_state['clk_data_full']["Timestamp"] <= end)
+            ]
+            st.session_state['filtered_data'] = filtered_data
+        
+        
+
+        def create_plots(timestamps, data):
+        # """
+        # This function creates a plotly figure with various subplots for data visualization.
+
+        # Args:
+        #     timestamps: A list or array containing the timestamps for the data.
+        #     data: A list or array containing the data values.
+
+        # Returns:
+        #     A plotly figure object.
+        # """
+
+            fig = make_subplots(
+                rows=2,
+                cols=2,
+                subplot_titles=("", "Histogram", "Sampling Interval", ""),
+                specs=[[{'type': 'scatter'}, {'type': 'histogram'}],
+                        [{'type': 'scatter'}, None]],
+                column_widths=[0.85, 0.15],
+                row_heights=[0.80, 0.20]
+            )
+
+            trace = go.Scatter(x=timestamps, y=data, mode='markers', name='Original')
+            fig.add_trace(trace, row=1, col=1)
+            fig.add_trace(go.Histogram(y=data, nbinsx=50, name='Histogram'), row=1, col=2)
+
+            # Dummy implementation for calculating sampling interval
+            intervals = timestamps.diff().fillna(0)[1:] # Exclude the first interval
+            interval_timestamps = timestamps[1:]  # Exclude the first timestamp to match intervals
+
+            fig.add_trace(
+                go.Scatter(
+                    x=interval_timestamps,
+                    y=intervals,
+                    mode='lines+markers',
+                    name='Sampling Interval',
+                    marker=dict(color='royalblue'),
+                    line=dict(dash='dot')
+                ),
+                row=2, col=1
+            )
+            fig.update_xaxes(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none', row=2, col=1)
+            fig.update_xaxes(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none', row=1, col=1)
+            
+            # Determine y-axis title based on tau0 value
+            tau0 = st.session_state.input_data['tau0']
+            y_axis_title = "Days" if tau0 >= 86400 else "Seconds"
+            fig.update_yaxes(title_text=y_axis_title, row=2, col=1)  # Set y-axis label for the subplot in row 2, col 1
+
+            fig.update_layout(
+                title="Clock Data",
+                xaxis_title="MJD",
+                yaxis_title="Phase data [ns]",
+                yaxis=dict(tickmode='auto', nticks=10),
+                showlegend=False,
+                xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+                height=600
+
+            )
+
+            return fig
+
+        # Function to remove trend
+        def remove_trend(data, trend_type):
+            x = np.arange(len(data))
+            if trend_type == 'Linear':
+                p = np.polyfit(x, data, 1)
+                trend = np.polyval(p, x)
+                return data - trend, p[0], [p[1]]  # Return residuals and slope and intercept
+            elif trend_type == 'Quadratic':
+                p = np.polyfit(x, data, 2)
+                trend = np.polyval(p, x)
+                return data - trend, None, p  # Return residuals and coefficients
+            else:
+                trend = np.zeros_like(data)
+                return data - trend, None, None  # Return residuals
+                
+        
+        def remove_offset(data):
+            mean_value = np.mean(data)
+            offset_removed_data = data - mean_value
+            return offset_removed_data, mean_value
+        
+        
+        def remove_outliers(data, std_threshold, value_col="Value"):
+            mean = np.mean(data[value_col])
+            std_dev = np.std(data[value_col])
+            filtered_data = data[np.abs(data[value_col] - mean) <= std_threshold * std_dev]
+            return filtered_data, std_dev, np.std(filtered_data[value_col])
+
+
+        # Symmetric Moving average filter for both even and odd window sizes
+        def moving_average(data, window_size):
+            half_window = window_size // 2
+            if window_size % 2 == 0:
+                # Even window size
+                extended_data = np.pad(data, (half_window - 1, half_window), mode='reflect')
+            else:
+                # Odd window size
+                extended_data = np.pad(data, (half_window, half_window), mode='reflect')
+            
+            smoothed_data = np.convolve(extended_data, np.ones(window_size) / window_size, mode='valid')
+            return smoothed_data
+
+        # Calculate moving average
+        def smoothing_overlap(data, window_size, timestamps):
+            smoothed_data = moving_average(data, window_size)
+            half_window = window_size // 2
+            if window_size % 2 == 0:
+                valid_timestamps = timestamps[half_window - 1: -half_window]
+            else:
+                valid_timestamps = timestamps[half_window: -half_window]
+
+            # Ensure lengths are the same
+            valid_timestamps = valid_timestamps[:len(smoothed_data)]
+            smoothed_data = smoothed_data[:len(valid_timestamps)]
+            
+            return valid_timestamps, smoothed_data
+        
+        # Calculate moving average for overlapping case
+        def smoothing_nonoverlap(data, window_size, timestamps):
+            n = len(data)
+            num_segments = n // window_size
+
+            # Only consider full segments
+            data = data[:num_segments * window_size]
+            timestamps = timestamps[:num_segments * window_size]
+
+            # Reshape data to have num_segments rows, each of length window_size
+            reshaped_data = data.reshape(num_segments, window_size)
+            reshaped_timestamps = timestamps.reshape(num_segments, window_size)
+
+            # Compute the mean for each segment
+            smoothed_data = reshaped_data.mean(axis=1)
+            valid_timestamps = reshaped_timestamps.mean(axis=1)
+
+            return valid_timestamps, smoothed_data
+        
+        def read_data(data):
+            return data
+
+        def plot_mdev(data,sampling_int,data_type, label=None, color='orange', marker='o'):
+            # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
+            # tau_values = [2**i for i in range(max_tau_exponent + 1)]
+            max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
+            tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+            
+            # data_type = "phase"
+            # taus, ad, ade, ns = adev(data, (1/sampling_int), taus=tau_values)
+
+
+            tau_used, md, mderr, ns = mdev(data,(1/sampling_int), data_type, tau_values)
+
+            plt.loglog(tau_used, md, marker=marker, color=color, label=label)
+            plt.xlabel('Tau (s)')
+            plt.ylabel('Modified Allan Deviation')
+            plt.title('Modified Allan Deviation (MDEV)')
+            plt.legend()
+            plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
+            plt.minorticks_on()
+            plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
+            return tau_used, md
+
+        def plot_tdev(data, sampling_int, data_type, label=None, color='blue', marker='*'):
+            # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
+            # tau_values = [2**i for i in range(max_tau_exponent + 1)]
+
+            max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
+            tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+                        
+            # data_type = "phase"
+            taus, td, tde, ns = tdev(data, (1/sampling_int), data_type,  tau_values)
+
+            plt.loglog(taus, td, marker=marker, color=color, label=label)
+            plt.xlabel('Tau (s)')
+            plt.ylabel('Time Deviation [s]')
+            plt.title('Time Deviation (TDEV)')
+            plt.legend()
+            plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
+            plt.minorticks_on()
+            plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
+            return taus, td
+
+        def plot_oadev(data, sampling_int, data_type, label=None, color='red', marker='^'):
+            # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
+            # tau_values = [2**i for i in range(max_tau_exponent + 1)]
+
+            max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
+            tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+                        
+            # data_type = "phase"
+
+            taus, ad, ade, ns = oadev(data, (1/sampling_int), data_type, taus=tau_values)
+            plt.loglog(taus, ad, marker=marker, color=color, label=label)
+            plt.xlabel('Tau (s)')
+            plt.ylabel('Overlapping Allan Deviation')
+            plt.title('Overlapping Allan Deviation (OADEV)')
+            plt.legend()
+            plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
+            plt.minorticks_on()
+            plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
+            return taus, ad
+
+        def plot_adev(data, sampling_int, data_type, label=None, color='green', marker='s'):
+            # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
+            # tau_values = [2**i for i in range(max_tau_exponent + 1)]
+            # Calculate the maximum tau exponent so that tau_values remain less than the length of data
+            max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
+            tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+            
+
+            taus, ad, ade, ns = adev(data, (1/sampling_int), data_type,taus=tau_values)
+            plt.loglog(taus, ad, marker=marker, color=color, label=label)
+            plt.xlabel('Tau (s)')
+            plt.ylabel('Allan Deviation')
+            plt.title('Allan Deviation (ADEV)')
+            plt.legend()
+            plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
+            plt.minorticks_on()
+            plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
+            return taus, ad
+
+        
+        def mdev(data, rate=1.0, data_type="phase", taus=None):
+            """  Modified Allan deviation.
+            Used to distinguish between White and Flicker Phase Modulation.
+
+            .. math::
+
+                \\sigma^2_{MDEV}(m\\tau_0) = { 1 \\over 2 (m \\tau_0 )^2 (N-3m+1) }
+                \\sum_{j=1}^{N-3m+1} \\left[
+                \\sum_{i=j}^{j+m-1} {x}_{i+2m} - 2x_{i+m} + x_{i} \\right]^2
+
+            Parameters
+            ----------
+            data: np.array
+                Input data. Provide either phase or frequency (fractional,
+                adimensional).
+            rate: float
+                The sampling rate for data, in Hz. Defaults to 1.0
+            data_type: {'phase', 'freq'}
+                Data type, i.e. phase or frequency. Defaults to "phase".
+            taus: np.array
+                Array of tau values, in seconds, for which to compute statistic.
+                Optionally set taus=["all"|"octave"|"decade"] for automatic
+                tau-list generation.
+
+            Returns
+            -------
+            (taus2, md, mde, ns): tuple
+                Tuple of values
+            taus2: np.array
+                Tau values for which td computed
+            md: np.array
+                Computed mdev for each tau value
+            mde: np.array
+                mdev errors
+            ns: np.array
+                Values of N used in each mdev calculation
+
+            References
+            ----------
+            * NIST [SP1065]_ eqn (14), page 17.
+            * http://www.leapsecond.com/tools/adev_lib.c
+            """
+            phase = input_to_phase(data, rate, data_type)
+            
+            (phase, ms, taus_used) = tau_generator(phase, rate, "mdev", taus=taus)
+            data, taus = np.array(phase), np.array(taus)
+
+            md = np.zeros_like(ms, dtype=np.float64)
+            mderr = np.zeros_like(ms, dtype=np.float64)
+            ns = np.zeros_like(ms)
+            
+            # this is a 'loop-unrolled' algorithm following
+            # http://www.leapsecond.com/tools/adev_lib.c
+            for idx, m in enumerate(ms):
+                m = int(m)  # without this we get: VisibleDeprecationWarning:
+                # using a non-integer number instead of an integer
+                # will result in an error in the future
+                tau = taus_used[idx]
+
+                # First loop sum
+                d0 = phase[0:m]
+                d1 = phase[m:2*m]
+                d2 = phase[2*m:3*m]
+                e = min(len(d0), len(d1), len(d2))
+                v = np.sum(d2[:e] - 2*d1[:e] + d0[:e])
+                s = v * v
+
+                # Second part of sum
+                d3 = phase[3*m:]
+                d2 = phase[2*m:]
+                d1 = phase[1*m:]
+                d0 = phase[0:]
+
+                e = min(len(d0), len(d1), len(d2), len(d3))
+                n = e + 1
+
+                v_arr = v + np.cumsum(d3[:e] - 3 * d2[:e] + 3 * d1[:e] - d0[:e])
+
+                s = s + np.sum(v_arr * v_arr)
+                s /= 2.0 * m * m * tau * tau * n
+                s = np.sqrt(s)
+
+
+                md[idx] = s
+                mderr[idx] = (s / np.sqrt(n))
+                ns[idx] = n
+             
+
+           
+            return remove_small_ns(taus_used, md, mderr, ns)
+
+        def tdev(data, rate=1.0, data_type="phase", taus=None):
+            (taus_used, md, mde, ns) = mdev(data, rate, data_type,  taus)
+
+            td = taus_used * md / np.sqrt(3.0)
+            tde = td / np.sqrt(ns)
+
+            return taus_used, td, tde, ns
+
+        def trim_data(x):
+            """Trim leading and trailing NaNs from dataset
+
+            This is done by browsing the array from each end and store the index of the
+            first non-NaN in each case, the return the appropriate slice of the array
+            """
+            # Find indices for first and last valid data
+            first = 0
+            while np.isnan(x[first]):
+                first += 1
+            last = len(x)
+            while np.isnan(x[last - 1]):
+                last -= 1
+            return x[first:last]
+
+        def frequency2phase(freqdata, rate):
+            """ integrate fractional frequency data and output phase data
+
+            Parameters
+            ----------
+            freqdata: np.array
+                Data array of fractional frequency measurements (nondimensional)
+            rate: float
+                The sampling rate for phase or frequency, in Hz
+
+            Returns
+            -------
+            phasedata: np.array
+                Time integral of fractional frequency data, i.e. phase (time) data
+                in units of seconds.
+                For phase in units of radians, see phase2radians()
+            """
+            dt = 1.0 / float(rate)
+            # Protect against NaN values in input array (issue #60)
+            # Reintroduces data trimming as in commit 503cb82
+            freqdata = trim_data(freqdata)
+            # Erik Benkler (PTB): Subtract mean value before cumsum in order to
+            # avoid precision issues when we have small frequency fluctuations on
+            # a large average frequency
+            freqdata = freqdata - np.nanmean(freqdata)
+            phasedata = np.cumsum(freqdata) * dt
+            phasedata = np.insert(phasedata, 0, 0)  # FIXME: why do we do this?
+            # so that phase starts at zero and len(phase)=len(freq)+1 ??
+            return phasedata
+
+        def input_to_phase(data, rate, data_type):
+            """ Take either phase or frequency as input and return phase
+            """
+            if data_type == "phase":
+                return data
+            elif data_type == "freq":
+                return frequency2phase(data, rate)
+            else:
+                raise Exception("unknown data_type: " + data_type)
+            
+
+        def calc_adev_phase(phase, rate, mj, stride):
+            """  Main algorithm for adev() (stride=mj) and oadev() (stride=1)
+
+            Parameters
+            ----------
+            phase: np.array
+                Phase data in seconds.
+            rate: float
+                The sampling rate for phase or frequency, in Hz
+            mj: int
+                averaging factor, we evaluate at tau = m*tau0
+            stride: int
+                Size of stride
+
+            Returns
+            -------
+            (dev, deverr, n): tuple
+                Array of computed values.
+
+            Notes
+            -----
+            stride = mj for nonoverlapping Allan deviation
+            stride = 1 for overlapping Allan deviation
+
+            * NIST [SP1065]_ eqn (7) and (11) page 16
+            """
+            mj = int(mj)
+            stride = int(stride)
+            d2 = phase[2 * mj::stride]
+            d1 = phase[1 * mj::stride]
+            d0 = phase[::stride]
+
+            n = min(len(d0), len(d1), len(d2))
+
+            if n == 0:
+                RuntimeWarning("Data array length is too small: %i" % len(phase))
+                n = 1
+
+            v_arr = d2[:n] - 2 * d1[:n] + d0[:n]
+            s = np.sum(v_arr * v_arr)
+
+            dev = np.sqrt(s / (2.0*n)) / mj*rate
+            deverr = dev / np.sqrt(n)
+
+            return dev, deverr, n
+
+
+        def tau_generator(data, rate, dev, taus=None, v=False, even=False, maximum_m=-1):
+            
+
+            """ pre-processing of the tau-list given by the user (Helper function)
+
+            Does sanity checks, sorts data, removes duplicates and invalid values.
+            Generates a tau-list based on keywords 'all', 'decade', 'octave'.
+            Uses 'octave' by default if no taus= argument is given.
+
+            Parameters
+            ----------
+            data: np.array
+                data array
+            rate: float
+                Sample rate of data in Hz. Time interval between measurements
+                is 1/rate seconds.
+            taus: np.array
+                Array of tau values for which to compute measurement.
+                Alternatively one of the keywords: "all", "octave", "decade".
+                Defaults to "octave" if omitted.
+
+                +----------+--------------------------------+
+                | keyword  |   averaging-factors            |
+                +==========+================================+
+                | "all"    |  1, 2, 3, 4, ..., len(data)    |
+                +----------+--------------------------------+
+                | "octave" |  1, 2, 4, 8, 16, 32, ...       |
+                +----------+--------------------------------+
+                | "decade" |  1, 2, 4, 10, 20, 40, 100, ... |
+                +----------+--------------------------------+
+                | "log10"  |  approx. 10 points per decade  |
+                +----------+--------------------------------+
+            v: bool
+                verbose output if True
+            even: bool
+                require even m, where tau=m*tau0, for Theo1 statistic
+            maximum_m: int
+                limit m, where tau=m*tau0, to this value.
+                used by mtotdev() and htotdev() to limit maximum tau.
+
+            Returns
+            -------
+            (data, m, taus): tuple
+                List of computed values
+            data: np.array
+                Data
+            m: np.array
+                Tau in units of data points
+            taus: np.array
+                Cleaned up list of tau values
+            """
+            # st.write(f"Rate: {rate}")
+            # st.write(f"Data input: {data}")
+            # st.write(f"taus: {taus}")
+
+            if rate == 0:
+                raise RuntimeError("Warning! rate==0")
+
+            if taus is None:  # empty or no tau-list supplied
+                taus = "octave"  # default to octave
+                # st.write("tau input is None")
+            elif isinstance(taus, list) and taus == []:  # empty list
+                taus = "octave"
+
+            # numpy array or non-empty list detected first
+            if isinstance(taus, np.ndarray) or isinstance(taus, list) and len(taus):
+                pass
+            elif taus == "all":  # was 'is'
+                taus = (1.0/rate)*np.linspace(1.0, len(data), len(data))
+            elif taus == "octave":
+                maxn = np.floor(np.log2(len(data)))
+                taus = (1.0/rate)*np.logspace(0, int(maxn), int(maxn+1), base=2.0)
+                # st.write(f"Taus CREATED: {taus}")
+            elif taus == "log10":
+                maxn = np.log10(len(data))
+                taus = (1.0/rate)*np.logspace(0, maxn, int(10*maxn), base=10.0)
+                if v:
+                    print("tau_generator: maxn %.1f" % maxn)
+                    print("tau_generator: taus=" % taus)
+            elif taus == "decade":  # 1, 2, 4, 10, 20, 40, spacing similar to Stable32
+                maxn = np.floor(np.log10(len(data)))
+                taus = []
+                for k in range(int(maxn+1)):
+                    taus.append(1.0*(1.0/rate)*pow(10.0, k))
+                    taus.append(2.0*(1.0/rate)*pow(10.0, k))
+                    taus.append(4.0*(1.0/rate)*pow(10.0, k))
+
+            data, taus = np.array(data), np.array(taus)
+            rate = float(rate)
+            m = []  # integer averaging factor. tau = m*tau0
+
+            if dev == "adev":
+                stop_ratio = 5
+            elif dev == "mdev":
+                stop_ratio = 4
+            elif dev == "tdev":
+                stop_ratio = 4
+            elif dev == "oadev":
+                stop_ratio = 4
+
+            if maximum_m == -1:  # if no limit given
+                maximum_m = len(data)/stop_ratio
+            # FIXME: should we use a "stop-ratio" like Stable32
+            # found in Table III, page 9 of
+            # "Evolution of frequency stability analysis software"
+            # max(AF) = len(phase)/stop_ratio, where
+            # function  stop_ratio
+            # adev      5
+            # oadev     4
+            # mdev      4
+            # tdev      4
+            # hdev      5
+            # ohdev     4
+            # totdev    2
+            # tierms    4
+            # htotdev   3
+            # mtie      2
+            # theo1     1
+            # theoH     1
+            # mtotdev   2
+            # ttotdev   2
+            
+            # m = np.round(taus * rate)
+            # m = (taus * rate).astype(int)
+            m = np.round(taus * rate).astype(int)
+            # Debug: Check the calculated taus and m
+            # st.write(f"Calculated taus: {taus}")
+            # st.write(f"Calculated m: {m}")
+
+            taus_valid1 = m < len(data)
+            taus_valid2 = m > 0
+            taus_valid3 = m <= maximum_m
+            taus_valid = taus_valid1 & taus_valid2 & taus_valid3
+            m = m[taus_valid]
+            m = m[m != 0]       # m is tau in units of datapoints
+            m = np.unique(m)    # remove duplicates and sort
+
+            if v:
+                print("tau_generator: ", m)
+
+            if len(m) == 0:
+                print("Warning: sanity-check on tau failed!")
+                print("   len(data)=", len(data), " rate=", rate, "taus= ", taus)
+
+            taus2 = m / float(rate)
+
+            if even:  # used by Theo1
+                m_even_mask = ((m % 2) == 0)
+                m = m[m_even_mask]
+                taus2 = taus2[m_even_mask]
+
+            # st.write(f"taus returned: {taus2}")
+            return data, m, taus2
+
+
+        def remove_small_ns(taus, devs, deverrs, ns):
+            """ Remove results with small number of samples.
+
+            If n is small (==1), reject the result
+
+            Parameters
+            ----------
+            taus: array
+                List of tau values for which deviation were computed
+            devs: array
+                List of deviations
+            deverrs: array or list of arrays
+                List of estimated errors (possibly a list containing two arrays :
+                upper and lower values)
+            ns: array
+                Number of samples for each point
+
+            Returns
+            -------
+            (taus, devs, deverrs, ns): tuple
+                Identical to input, except that values with low ns have been removed.
+
+            """
+            ns_big_enough = ns > 1
+
+            o_taus = taus[ns_big_enough]
+            o_devs = devs[ns_big_enough]
+            o_ns = ns[ns_big_enough]
+            if isinstance(deverrs, list):
+                assert len(deverrs) < 3
+                o_deverrs = [deverrs[0][ns_big_enough], deverrs[1][ns_big_enough]]
+            else:
+                o_deverrs = deverrs[ns_big_enough]
+            if len(o_devs) == 0:
+                print("remove_small_ns() nothing remains!?")
+                raise UserWarning
+
+            return o_taus, o_devs, o_deverrs, o_ns
+
+
+        def adev(data, rate, data_type, taus=None):
+            """ Allan deviation.
+                Classic - use only if required - relatively poor confidence.
+
+            .. math::
+
+                \\sigma^2_{ADEV}(\\tau) = { 1 \\over 2 \\tau^2 }
+                \\langle ( {x}_{n+2} - 2x_{n+1} + x_{n} )^2 \\rangle
+                = { 1 \\over 2 (N-2) \\tau^2 }
+                \\sum_{n=1}^{N-2} ( {x}_{n+2} - 2x_{n+1} + x_{n} )^2
+
+            where :math:`x_n` is the time-series of phase observations, spaced
+            by the measurement interval :math:`\\tau`, and with length :math:`N`.
+
+            Or alternatively calculated from a time-series of fractional frequency:
+
+            .. math::
+
+                \\sigma^{2}_{ADEV}(\\tau) =  { 1 \\over 2 }
+                \\langle ( \\bar{y}_{n+1} - \\bar{y}_n )^2 \\rangle
+
+            where :math:`\\bar{y}_n` is the time-series of fractional frequency
+            at averaging time :math:`\\tau`
+
+
+            Parameters
+            ----------
+            data: np.array
+                Input data. Provide either phase or frequency (fractional,
+                adimensional).
+            rate: float
+                The sampling rate for data, in Hz. Defaults to 1.0
+            data_type: {'phase', 'freq'}
+                Data type, i.e. phase or frequency. Defaults to "phase".
+            taus: np.array
+                Array of tau values, in seconds, for which to compute statistic.
+                Optionally set taus=["all"|"octave"|"decade"] for automatic
+                tau-list generation.
+
+            Returns
+            -------
+            (taus2, ad, ade, ns): tuple
+                Tuple of values
+            taus2: np.array
+                Tau values for which td computed
+            ad: np.array
+                Computed adev for each tau value
+            ade: np.array
+                adev errors
+            ns: np.array
+                Values of N used in each adev calculation
+            """
+            
+            phase = input_to_phase(data, rate, data_type)
+
+            # st.write(f"Taus input:{taus}")
+            # st.write(f"Rate in adev : {rate}")
+            (phase, m, taus_used) = tau_generator(phase, rate, "adev", taus)
+            # st.write(phase)
+            # st.write("Taus")
+            # st.write(taus_used)
+            ad = np.zeros_like(taus_used)
+            ade = np.zeros_like(taus_used)
+            adn = np.zeros_like(taus_used)
+
+            # st.write(f"Taus used: {taus_used}")
+            
+
+            for idx, mj in enumerate(m):  # loop through each tau value m(j)
+                (ad[idx], ade[idx], adn[idx]) = calc_adev_phase(phase, rate, mj, mj)
+
+            return remove_small_ns(taus_used, ad, ade, adn)
+
+
+
+        def oadev(data, rate=1.0, data_type="phase", taus=None):
+            """ Overlapping Allan deviation.
+            General purpose - most widely used - first choice.
+
+            .. math::
+
+                \\sigma^2_{OADEV}(m\\tau_0) = { 1 \\over 2 (m \\tau_0 )^2 (N-2m) }
+                \\sum_{n=1}^{N-2m} ( {x}_{n+2m} - 2x_{n+1m} + x_{n} )^2
+
+            where :math:`\\sigma_{OADEV}(m\\tau_0)` is the overlapping Allan
+            deviation at an averaging time of :math:`\\tau=m\\tau_0`, and
+            :math:`x_n` is the time-series of phase observations, spaced by the
+            measurement interval :math:`\\tau_0`, with length :math:`N`.
+
+            Parameters
+            ----------
+            data: np.array
+                Input data. Provide either phase or frequency (fractional,
+                adimensional).
+            rate: float
+                The sampling rate for data, in Hz. Defaults to 1.0
+            data_type: {'phase', 'freq'}
+                Data type, i.e. phase or frequency. Defaults to "phase".
+            taus: np.array
+                Array of tau values, in seconds, for which to compute statistic.
+                Optionally set taus=["all"|"octave"|"decade"] for automatic
+                tau-list generation.
+
+            Returns
+            -------
+            (taus2, ad, ade, ns): tuple
+                Tuple of values
+            taus2: np.array
+                Tau values for which td computed
+            ad: np.array
+                Computed oadev for each tau value
+            ade: np.array
+                oadev errors
+            ns: np.array
+                Values of N used in each oadev calculation
+
+            """
+            phase = input_to_phase(data, rate, data_type)
+            (phase, m, taus_used) = tau_generator(phase, rate, "oadev", taus)
+            
+            ad = np.zeros_like(taus_used)
+            ade = np.zeros_like(taus_used)
+            adn = np.zeros_like(taus_used)
+
+            for idx, mj in enumerate(m):  # stride=1 for overlapping ADEV
+                (ad[idx], ade[idx], adn[idx]) = calc_adev_phase(phase, rate, mj, 1)
+
+            return remove_small_ns(taus_used, ad, ade, adn)
+
+        # Example usage for updating stability results
+        if 'out_display' not in st.session_state:
+            initialize_state()
+
+        if st.session_state.selected == "Raw Data": # This tab is to show the files and plot the raw data  
+        
+       
+            # Function to create and return an empty DataFrame with the same structure
+            def create_empty_df():
+                return pd.DataFrame({
+                    "Files uploaded": pd.Series([], dtype=str),
+                    "Clock Name": pd.Series([], dtype=str),
+                    "Sample_data": pd.Series([], dtype=str),
+                    "Choose Clock": pd.Series([], dtype=bool)
+                })
+            
+            # Initialize or adjust session state for checkbox states
+            if 'df_display' not in st.session_state:
+                st.session_state.df_display = create_empty_df()
+            
+            # Initialize or adjust session state for checkbox states
+            num_rows = len(st.session_state.df_display)
+
+            # Define a function to synchronize checkbox states with df_display
+            def sync_checkbox_states():
+                num_rows = len(st.session_state.df_display)
+                if 'checkbox_states' not in st.session_state:
+                    st.session_state.checkbox_states = [False] * num_rows
+                else:
+                    if len(st.session_state.checkbox_states) < num_rows:
+                        st.session_state.checkbox_states.extend([False] * (num_rows - len(st.session_state.checkbox_states)))
+                    elif len(st.session_state.checkbox_states) > num_rows:
+                        st.session_state.checkbox_states = st.session_state.checkbox_states[:num_rows]
+
+            # Synchronize checkbox states initially
+            sync_checkbox_states()
+
+            # Define the column configurations
+            column_config = {
+                "Files uploaded": st.column_config.TextColumn("Files Uploaded", disabled=True,width= "small"),
+                "Clock Name": st.column_config.TextColumn("Clock Name", disabled=True),
+                "Sample_data": st.column_config.AreaChartColumn("Preview (Initial 1000 data points)",width= "large"),
+                # "Choose Clock": st.column_config.CheckboxColumn(label = "Select Clock",width= "small")
+                "Choose Clock": st.column_config.CheckboxColumn(label = "Select the Clocks",width= "small")
+            }
+           
+            if st.session_state.proceed or st.session_state.data_loaded:  # update the app if proceed button is pressed or keep the current status live
+                if st.session_state.files_uploaded:  # check the condition if the user press proceed without uploading the files
+                    st.session_state.data_loaded = True
+                    if st.session_state.proceed:  # Process the input data and its configuration only when the proceed button is clicked
+                        st.session_state.total_data = process_inputs(st.session_state.files_uploaded)
+                        st.session_state.proceed = False  # Change the proceed to make it false to avoid the rerun of the app during the changes in the input settings by the user
+
+                    # If the user selection is single clock with multiple files
+                    if st.session_state.total_data and 'combined' in st.session_state.total_data and st.session_state.file_combo == 'Single/ Mutiple files of same clock':
+                        df = st.session_state.total_data["combined"]
+                        if 'Value' in df.columns:
+                            clk_data = df['Value'].iloc[:1000].tolist() if len(df['Value']) > 1000 else df['Value'].tolist()
+                            clk_data_json = json.dumps(clk_data)  # Convert list to JSON string
+                            st.session_state.df_display = pd.DataFrame({
+                                "Files uploaded": [st.session_state.valid_filenames],  # All filenames in one cell
+                                "Sample_data": clk_data_json,  # First 1000 data points in one cell
+                                "Choose Clock": [False]  # Initialize checkboxes as unchecked
+                            })
+                        else:
+                            st.error("'Value' column not found in the DataFrame.")
+                    elif st.session_state.total_data:  # If the result is not none/empty and it also means each file is a different clock
+                        files_uploaded = []
+                        clock_names = []
+                        sample_data = []
+                        choose_clock = []  # List to handle checkbox state for each clock
+                        clock_name_mapping = {}
+                        # Process each file as a different clock
+                        for idx, (name, df) in enumerate(st.session_state.total_data.items()):
+                            if 'Value' in df.columns:
+                                clk_data = df['Value'].iloc[:1000].tolist() if len(df['Value']) > 1000 else df['Value'].tolist()
+                                clk_data_json = json.dumps(clk_data)  # Convert list to JSON string
+                                files_uploaded.append(name)
+                                clock_names.append(f"Clock {idx + 1}")  # Dynamic clock names
+                                clock_name_mapping[f"Clock {idx + 1}"] = name  # Map dynamic name to original name
+                                sample_data.append(clk_data_json)
+                                choose_clock.append(False)  # Default to unchecked
+                            else:
+                                st.error(f"'Value' column not found in the DataFrame for {name}.")
+
+                        st.session_state.df_display = pd.DataFrame({
+                            "Files uploaded": files_uploaded,
+                             "Clock Name": clock_names,
+                            "Sample_data": sample_data,
+                            "Choose Clock": choose_clock  # Checkbox column data
+                        })
+
+                    # Resynchronize checkbox states after updating df_display
+                    sync_checkbox_states()
+
+                else:
+                    st.error("Please upload the files")
+
+            # Ensure df_display is synchronized with checkbox states
+            for i in range(len(st.session_state.df_display)):
+                st.session_state.df_display.at[i, 'Choose Clock'] = st.session_state.checkbox_states[i]
+
+            # Update the data editor display with the new data
+            st.session_state['df_display'] = st.data_editor(
+                st.session_state.df_display,
+                column_config=column_config,
+                height=300,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                disabled=["Files uploaded", "Sample_data"]
+            )
+
+            # Update checkbox states based on the user interactions within st.data_editor
+            for i in range(len(st.session_state.df_display)):
+                st.session_state.checkbox_states[i] = st.session_state.df_display.at[i, 'Choose Clock']
+
+            
+            if st.button("Process Selected Clocks"):
+                # Extract selected rows based on the 'Choose Clock' column
+                selected_data = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]
+                
+                if selected_data.empty:
+                    st.error("Please select at least one clock to process")
+                else:
+                    st.session_state.clk_sel = True
+                    
+                    # Collect the names of the selected clocks
+                    selected_clock_names = []
+                    # Ensure 'Files uploaded' is always treated as a list and process each selected clock
+                    for index, row in selected_data.iterrows():
+                        clock_name = row["Clock Name"]
+                        selected_clock_names.append(clock_name)  # Add clock name to the list
+                        uploaded_files = row["Files uploaded"]
+                        if isinstance(uploaded_files, str):
+                            uploaded_files = [uploaded_files]
+
+                        for file in uploaded_files:
+                            # st.write(f"Selected Clock file for further processing: {file}")  # Print each selected file name
+                            # st.write(f"Selected {clock_name} for further processing")
+                            file_key = file.split('.')[0]
+
+                            if st.session_state.file_combo == 'Single/ Multiple files of same clock':
+                                if 'combined' in st.session_state.total_data:
+                                    st.session_state.clk_to_analyse = st.session_state.total_data['combined']
+                                    st.session_state.clk_filename = file
+                                else:
+                                    st.error("No combined data available")
+                            else:
+                                if file_key in st.session_state.total_data:
+                                    st.session_state.clk_to_analyse = st.session_state.total_data[file_key]
+                                    st.session_state.clk_filename = file
+                                else:
+                                    st.error(f"No data available for {file_key}")
+                    # Print the names of the selected clocks in a single statement
+                    st.write(f"Selected Clocks for processing: {', '.join(selected_clock_names)}")
+                    # st.write(st.session_state.clk_to_analyse)            
+                    # st.write(st.session_state.total_data)        
+                   
+                    # Initialize the data frames for all the tabs for the selected clocks
+                    for clock_name in selected_clock_names:
+                        initialize_clock_data(clock_name)
+                        original_key = clock_name_mapping[clock_name]  # Get the original key
+                        st.session_state.data[clock_name]['raw_data'] = st.session_state.total_data[original_key].copy()
+                        st.session_state.data[clock_name]['data_range'] = st.session_state.total_data[original_key].copy()
+                        st.session_state.data[clock_name]['detrend'] = st.session_state.total_data[original_key].copy()
+                        st.session_state.data[clock_name]['offset'] = st.session_state.total_data[original_key].copy()
+                        st.session_state.data[clock_name]['outlier'] = st.session_state.total_data[original_key].copy()
+                        st.session_state.data[clock_name]['smoothing'] = st.session_state.total_data[original_key].copy()
+                        st.session_state.data[clock_name]['stability'] = st.session_state.total_data[original_key].copy()
+                        st.session_state.data[clock_name]['outcome'] = st.session_state.total_data[original_key].copy()
+
+        if st.session_state.selected == "Data Range":
+            
+            if 'clk_sel' in st.session_state and st.session_state.clk_sel:
+                selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
+                selected_clock_names.append("Combine Clocks")
+
+                selected_clock = st.radio("**Select Clock for Range Selection**", selected_clock_names, horizontal=True)
+
+                if selected_clock == "Combine Clocks":
+                    combined_data = []
+                    for index, row in st.session_state.df_display.iterrows():
+                        if row["Clock Name"] in selected_clock_names[:-1]:
+                            clock_name = row["Clock Name"]
+                            clk_analysis = get_latest_data(clock_name, 'data_range')
+                            if clock_name in st.session_state.clock_ranges:
+                                start_range = st.session_state.clock_ranges[clock_name]['start_range']
+                                end_range = st.session_state.clock_ranges[clock_name]['end_range']
+                                filtered_data = clk_analysis[(clk_analysis["Timestamp"] >= start_range) & (clk_analysis["Timestamp"] <= end_range)]
+                                combined_data.append((filtered_data, clock_name))
+                                update_action(selected_clock, 'Data Range', f"Start: {start_range}, End: {end_range}")
+                            else:
+                                combined_data.append((clk_analysis, clock_name))
+
+                    fig = go.Figure()
+                    for data, name in combined_data:
+                        fig.add_trace(go.Scatter(x=data["Timestamp"], y=data["Value"], mode='markers', name=name))
+
+                    fig.update_xaxes(tickformat=".2f")
+                    fig.update_layout(
+                        title="Data of Clock",
+                        xaxis_title="MJD",
+                        yaxis_title="Phase data [ns]",
+                        yaxis=dict(tickmode='auto', nticks=10),
+                        showlegend=True,
+                        xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+                        height=600
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+                else:
+                    for index, row in st.session_state.df_display.iterrows():
+                        if row["Clock Name"] == selected_clock:
+                            clock_name = row["Clock Name"]
+                            clk_analysis = get_latest_data(clock_name, 'data_range')
+                            st.session_state['clk_data_full'] = clk_analysis.copy()
+
+                            if clock_name not in st.session_state.clock_ranges:
+                                st.session_state.clock_ranges[clock_name] = {
+                                    'start_range': clk_analysis["Timestamp"].iloc[0],
+                                    'end_range': clk_analysis["Timestamp"].max()
+                                }
+
+                            start_range = st.session_state.clock_ranges[clock_name]['start_range']
+                            end_range = st.session_state.clock_ranges[clock_name]['end_range']
+
+                            if f"start_float_{clock_name}" not in st.session_state:
+                                st.session_state[f"start_float_{clock_name}"] = str(start_range)
+                            if f"end_float_{clock_name}" not in st.session_state:
+                                st.session_state[f"end_float_{clock_name}"] = str(end_range)
+
+                            reset_clicked = st.button("Reset to full Data", key=f"reset_button_{clock_name}")
+
+                            if reset_clicked:
+                                full_data = st.session_state.data[clock_name]['raw_data']
+                                st.session_state.clock_ranges[clock_name] = {
+                                    'start_range': full_data["Timestamp"].iloc[0],
+                                    'end_range': full_data["Timestamp"].max()
+                                }
+                                start_range = full_data["Timestamp"].iloc[0]
+                                end_range = full_data["Timestamp"].max()
+
+                                # Directly update session state values
+                                st.session_state[f"start_float_{clock_name}"] = str(start_range)
+                                st.session_state[f"end_float_{clock_name}"] = str(end_range)
+
+                                st.session_state['filtered_data'] = full_data.copy()
+                                st.session_state.data[clock_name]['data_range'] = full_data.copy()
+
+                                col1, col2, col3, col4, col5 = st.columns(5)
+
+                                # Use session state values to initialize the input fields
+                                start_range_input = col1.text_input(
+                                    "Horizontal axis start", value=st.session_state[f"start_float_{clock_name}"], key=f"start_{clock_name}"
+                                )
+                                end_range_input = col3.text_input(
+                                    "Horizontal axis end", value=st.session_state[f"end_float_{clock_name}"], key=f"end_{clock_name}"
+                                )
+
+                                fig = create_plots(st.session_state['filtered_data']['Timestamp'], st.session_state['filtered_data']['Value'])
+                                st.plotly_chart(fig, use_container_width=True)
+
+                            else: 
+                                col1, col2, col3, col4, col5 = st.columns(5)
+
+                                # Use session state values to initialize the input fields
+                                start_range_input = col1.text_input(
+                                    "Horizontal axis start", value=st.session_state[f"start_float_{clock_name}"], key=f"start_{clock_name}"
+                                )
+                                end_range_input = col3.text_input(
+                                    "Horizontal axis end", value=st.session_state[f"end_float_{clock_name}"], key=f"end_{clock_name}"
+                                )
+
+                                try:
+                                    if start_range_input and end_range_input:
+                                        start_range = float(start_range_input)
+                                        end_range = float(end_range_input)
+
+                                        if start_range < end_range:
+                                            st.session_state.clock_ranges[clock_name]['start_range'] = start_range
+                                            st.session_state.clock_ranges[clock_name]['end_range'] = end_range
+                                            st.session_state['filtered_data'] = clk_analysis[(clk_analysis["Timestamp"] >= start_range) & (clk_analysis["Timestamp"] <= end_range)].copy()
+
+                                            # Update session state values if valid range is provided
+                                            st.session_state[f"start_float_{clock_name}"] = str(start_range)
+                                            st.session_state[f"end_float_{clock_name}"] = str(end_range)
+                                            update_action(selected_clock, 'Data Ranged', f"Start: {start_range}, End: {end_range}")
+
+                                        else:
+                                            st.error("End Range must be greater than Start Range")
+                                except ValueError as e:
+                                    st.error(f"Invalid input: {e}")
+                                except Exception as e:
+                                    st.error(f"An error occurred: {e}")
+                                
+                                fig = create_plots(st.session_state['filtered_data']['Timestamp'], st.session_state['filtered_data']['Value'])
+                                st.plotly_chart(fig, use_container_width=True)
+
+                            # Store the processed data for this tab
+                            st.session_state.data[clock_name]['data_range'] = st.session_state['filtered_data'].copy()
+                            break
+        
+        if st.session_state.selected == "Detrend":
+            selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
+            selected_clock_names.append("Combine Clocks")
+
+            selected_clock = st.radio("Select Clock for Detrending", selected_clock_names, horizontal=True)
+
+            if selected_clock != "Combine Clocks":
+                trend_options = ["None", "Linear", "Quadratic"]
+
+                # Ensure trend selection is initialized for each clock
+                if 'trend_selection' not in st.session_state:
+                    st.session_state.trend_selection = {}
+
+                if selected_clock not in st.session_state.trend_selection:
+                    st.session_state.trend_selection[selected_clock] = "None"
+
+                selected_trend = st.radio(
+                    "Select trend to plot the residuals",
+                    trend_options,
+                    index=trend_options.index(st.session_state.trend_selection[selected_clock]),
+                    horizontal=True
+                )
+
+                st.session_state.trend_selection[selected_clock] = selected_trend
+
+                # Process the data for the selected clock
+                for index, row in st.session_state.df_display.iterrows():
+                    if row["Clock Name"] == selected_clock:
+                        clock_key = row["Files uploaded"]
+                        clk_detrend = st.session_state.total_data[clock_key]
+                        if clock_key in st.session_state.clock_ranges:
+                            start_range = st.session_state.clock_ranges[clock_key]['start_range']
+                            end_range = st.session_state.clock_ranges[clock_key]['end_range']
+                            st.session_state['filtered_data'] = clk_detrend.loc[(clk_detrend["Timestamp"] >= start_range) & (clk_detrend["Timestamp"] <= end_range)].copy()
+                        else:
+                            st.session_state['filtered_data'] = clk_detrend.copy()
+                        break
+
+                # Get data and timestamps
+                data_to_plot = st.session_state['filtered_data']['Value'].values
+                timestamps = st.session_state['filtered_data']['Timestamp']
+                residuals, slope, coeffs = remove_trend(data_to_plot, selected_trend)
+                st.session_state['filtered_data'].loc[:, 'Detrended_Value'] = residuals
+                st.session_state['filtered_data'].loc[:, 'Value'] = residuals  # Update Value with Detrended_Value
+
+                # Select data based on trend selection
+                selected_trend = st.session_state.trend_selection[selected_clock]
+                if selected_trend in ['None', 'Linear', 'Quadratic']:
+                    if 'Detrended_Value' in st.session_state['filtered_data'].columns:
+                        data_to_plot = st.session_state['filtered_data']['Detrended_Value'].values
+                    else:
+                        data_to_plot = st.session_state['filtered_data']['Value'].values
+
+                # Create plot
+                fig = create_plots(timestamps, data_to_plot)
+                st.plotly_chart(fig, use_container_width=True)
+
+                trend_info = []
+                equation = ""  # Initialize the equation variable
+                if selected_trend == 'Linear':
+                    equation = f"x(t) = {slope:.2e}t + {coeffs[0]:.2e}"
+                    trend_info.append({
+                        "Type": "Linear",
+                        "Parameter": "Equation",
+                        "Value": equation
+                    })
+                    st.session_state.trend_slopes[selected_clock] = slope
+                elif selected_trend == 'Quadratic':
+                    equation = f"x(t) = {coeffs[0]:.2e}t^2 + {coeffs[1]:.2e}t + {coeffs[2]:.2e}"
+                    trend_info.append({
+                        "Type": "Quadratic",
+                        "Parameter": "Equation",
+                        "Value": equation
+                    })
+                    st.session_state.trend_coeffs[selected_clock] = coeffs
+
+                if trend_info:
+                    trend_df = pd.DataFrame(trend_info)
+                    st.table(trend_df[['Parameter', 'Value']])
+
+                update_action(selected_clock, 'Detrended', f"Method: {selected_trend}, Equation: {equation}")
+                # Store the updated data in the session state for the current tab
+                st.session_state.data[selected_clock]['detrend'] = st.session_state['filtered_data'].copy()
+                # Store the updated data in the session state for the next tab
+                st.session_state.data[selected_clock]['offset'] = st.session_state['filtered_data'].copy()
+                st.session_state.data[selected_clock]['outlier'] = st.session_state['filtered_data'].copy()
+                st.session_state.data[selected_clock]['smoothing'] = st.session_state['filtered_data'].copy()
+                st.session_state.data[selected_clock]['stability'] = st.session_state['filtered_data'].copy()
+                st.session_state.data[selected_clock]['outcome'] = st.session_state['filtered_data'].copy()
+            
+            else:  # If combined clock is selected
+                if 'combined_clocks' not in st.session_state.data:
+                    st.session_state.data['combined_clocks'] = {'detrend': pd.DataFrame()}
+
+                combined_data = []
+                detrend_info = []
+
+                for index, row in st.session_state.df_display.iterrows():
+                    if row["Clock Name"] in selected_clock_names[:-1]:
+                        clock_name = row["Clock Name"]
+                        clk_analysis = get_latest_data(clock_name, 'detrend')
+                        
+                        if clock_name in st.session_state.clock_ranges:
+                            start_range = st.session_state.clock_ranges[clock_name]['start_range']
+                            end_range = st.session_state.clock_ranges[clock_name]['end_range']
+                            filtered_data = clk_analysis.loc[(clk_analysis["Timestamp"] >= start_range) & (clk_analysis["Timestamp"] <= end_range)].copy()
+                        else:
+                            filtered_data = clk_analysis.copy()
+
+                        trend = st.session_state.trend_selection.get(clock_name, "None")
+                        residuals, slope, coeffs = remove_trend(filtered_data['Value'].values, trend)
+                        filtered_data['Detrended_Value'] = residuals
+                        filtered_data['Value'] = residuals  # Update Value with Detrended_Value
+                        combined_data.append((filtered_data, clock_name))
+                        equation = ""
+                        if trend == 'Linear':
+                            equation = f"x(t) = {slope:.2e}t + {coeffs[0]:.2e}"
+                            st.session_state.trend_slopes[clock_name] = slope
+                            st.session_state.trend_intercepts[selected_clock] = coeffs[0]
+                        elif trend == 'Quadratic':
+                            equation = f"x(t) = {coeffs[0]:.2e}t^2 + {coeffs[1]:.2e}t + {coeffs[2]:.2e}"
+                            st.session_state.trend_coeffs[clock_name] = coeffs
+                        detrend_info.append({
+                            "Clock Name": clock_name,
+                            "Trend": trend,
+                            "Equation": equation
+                        })
+
+                fig = go.Figure()
+                for data, name in combined_data:
+                    fig.add_trace(go.Scatter(x=data["Timestamp"], y=data["Detrended_Value"], mode='markers', name=name))
+
+                fig.update_xaxes(tickformat=".3f")
+                fig.update_layout(
+                    title="Detrended Data of Clocks",
+                    xaxis_title="MJD",
+                    yaxis_title="Detrended Phase data [ns]",
+                    yaxis=dict(tickmode='auto', nticks=10),
+                    showlegend=True,
+                    xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+                    height=600
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.markdown("### Detrend Information for Each Clock")
+                detrend_df = pd.DataFrame(detrend_info)
+                st.table(detrend_df[['Clock Name', 'Trend', 'Equation']])
+
+                combined_df = pd.DataFrame()
+                for data, name in combined_data:
+                    temp_df = data[['Timestamp', 'Detrended_Value']].copy()
+                    temp_df.columns = [f'Timestamp_{name}', f'Detrended_Value_{name}']
+                    combined_df = pd.concat([combined_df, temp_df], axis=1)
+
+                st.session_state.data['combined_clocks']['detrend'] = combined_df.copy()  # Store combined detrended data
+
+                combined_df = combined_df.round(2)
+                csv = combined_df.to_csv(index=False)
+                st.download_button(
+                    label="Download Combined Data as CSV",
+                    data=csv,
+                    file_name='combined_detrended_data.csv',
+                    mime='text/csv',
+                )
+
+        if st.session_state.selected == "Offset":
+            
+            # Ensure all selected clocks are accounted for
+            selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
+            selected_clock_names.append("Combine Clocks")
+
+            # Select clock for offset removal
+            selected_clock = st.radio("Select Clock for Offset Removal", selected_clock_names, horizontal=True)
+
+            if selected_clock != "Combine Clocks":
+                offset_options = ["None", "Remove Offset[Mean Value]"]
+
+                if selected_clock not in st.session_state.offset_selection:
+                    st.session_state.offset_selection[selected_clock] = "None"
+
+                selected_offset = st.radio(
+                    "Select Offset Option",
+                    offset_options,
+                    index=offset_options.index(st.session_state.offset_selection[selected_clock]),
+                    horizontal=True
+                )
+
+                st.session_state.offset_selection[selected_clock] = selected_offset
+
+                # Get the latest data for the selected clock up to the offset tab
+                clock_data = get_latest_data(selected_clock, 'offset').dropna().copy()
+
+                mean_before_removal = np.mean(clock_data['Value'].values)
+                selected_offset = st.session_state.offset_selection[selected_clock]
+
+                if selected_offset == "Remove Offset[Mean Value]":
+                    offset_removed_data, mean_before_removal = remove_offset(clock_data['Value'].values)
+                    clock_data['Offset_Removed_Value'] = offset_removed_data
+                    mean_after_removal = np.mean(offset_removed_data)
+                else:
+                    clock_data['Offset_Removed_Value'] = clock_data['Value']
+                    mean_after_removal = mean_before_removal
+
+                # Create plot
+                data_to_plot = clock_data['Offset_Removed_Value'].values
+                timestamps = clock_data['Timestamp']
+                fig = create_plots(timestamps, data_to_plot)
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.markdown(f"**Mean Value (Before Removal):** {mean_before_removal:.2f} [ns]")
+                if selected_offset == "Remove Offset[Mean Value]":
+                    st.markdown(f"**Mean Value (After Removal):** {mean_after_removal:.2f} [ns]")
+                    update_action(selected_clock, 'Offset Removed', f"Method: {selected_offset}, Mean Before: {mean_before_removal}, Mean After: {mean_after_removal}")
+
+                # Store the updated data in the session state for the current tab
+                st.session_state.data[selected_clock]['offset'] = clock_data.copy()
+                # Store the updated data in the session state for the next tabs
+                st.session_state.data[selected_clock]['outlier'] = clock_data.copy()
+                st.session_state.data[selected_clock]['smoothing'] = clock_data.copy()
+                st.session_state.data[selected_clock]['stability'] = clock_data.copy()
+                st.session_state.data[selected_clock]['outcome'] = clock_data.copy()
+
+            else:
+                combined_data = []
+                combined_info = []
+
+                for index, row in st.session_state.df_display.iterrows():
+                    if row["Clock Name"] in selected_clock_names[:-1]:
+                        clock_name = row["Clock Name"]
+                        # Get the latest data for the clock up to the offset tab
+                        clock_data = get_latest_data(clock_name, 'offset').dropna().copy()
+
+                        mean_before_removal = np.mean(clock_data['Value'].values)
+                        offset_option = st.session_state.offset_selection.get(clock_name, "None")
+                        if offset_option == "Remove Offset[Mean Value]":
+                            offset_removed_data, mean_before_removal = remove_offset(clock_data['Value'].values)
+                            clock_data['Offset_Removed_Value'] = offset_removed_data
+                            mean_after_removal = np.mean(offset_removed_data)
+                        else:
+                            clock_data['Offset_Removed_Value'] = clock_data['Value']
+                            mean_after_removal = mean_before_removal
+
+                        combined_data.append((clock_data, clock_name))
+
+                        trend = st.session_state.trend_selection.get(clock_name, "None")
+                        if trend == "Linear":
+                            slope = st.session_state.trend_slopes.get(clock_name, None)
+                            intercept = st.session_state.trend_intercepts.get(selected_clock, None)
+                            equation = f"x(t) = {slope:.2e}t + {intercept:.2e}" if slope is not None else ""
+                        elif trend == "Quadratic":
+                            coeffs = st.session_state.trend_coeffs.get(clock_name, None)
+                            equation = f"x(t) = {coeffs[0]:.2e}t^2 + {coeffs[1]:.2e}t + {coeffs[2]:.2e}" if coeffs is not None else ""
+                        else:
+                            equation = ""
+
+                        combined_info.append({
+                            "Clock Name": clock_name,
+                            "Trend": f"{trend} ({equation})" if trend != "None" else "None",
+                            "Offset Option": offset_option,
+                            "Mean Value (Before Removal)": f"{mean_before_removal:.2f} [ns]",
+                            "Mean Value (After Removal)": f"{mean_after_removal:.2f} [ns]" if offset_option == "Remove Offset[Mean Value]" else ""
+                        })
+
+                fig = go.Figure()
+                for data, name in combined_data:
+                    fig.add_trace(go.Scatter(x=data["Timestamp"], y=data["Offset_Removed_Value"], mode='markers', name=name))
+
+                fig.update_xaxes(tickformat=".3f")
+                fig.update_layout(
+                    title="Offset Removed Data of Clocks",
+                    xaxis_title="MJD",
+                    yaxis_title="Offset Removed Phase data [ns]",
+                    yaxis=dict(tickmode='auto', nticks=10),
+                    showlegend=True,
+                    xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+                    height=600
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.markdown("### Combined Information for Each Clock")
+                combined_df = pd.DataFrame(combined_info)
+                st.table(combined_df[['Clock Name', 'Trend', 'Offset Option', 'Mean Value (Before Removal)', 'Mean Value (After Removal)']])
+
+                combined_data_df = pd.DataFrame()
+                for data, name in combined_data:
+                    temp_df = data[['Timestamp', 'Offset_Removed_Value']].copy()
+                    temp_df.columns = [f'Timestamp_{name}', f'Offset_Removed_Value_{name}']
+                    combined_data_df = pd.concat([combined_data_df, temp_df], axis=1)
+
+                st.session_state.data['combined_clocks']['offset'] = combined_data_df.copy()  # Store combined offset removed data
+
+                combined_data_df = combined_data_df.round(2)
+                csv_header = "# Combined Clock Data\n"
+                for info in combined_info:
+                    csv_header += f"# Clock Name: {info['Clock Name']}, Offset Option: {info['Offset Option']}, Mean Value (Before Removal): {info['Mean Value (Before Removal)']}"
+                    if info['Offset Option'] == "Remove Offset[Mean Value]":
+                        csv_header += f", Mean Value (After Removal): {info['Mean Value (After Removal)']}\n"
+                    else:
+                        csv_header += "\n"
+                    csv_header += f"# Clock Name: {info['Clock Name']}, Detrend Option: {info['Trend']}\n"
+                csv_header += "# Data\n"
+                csv = csv_header + combined_data_df.to_csv(index=False)
+                st.download_button(
+                    label="Download Combined Data as CSV",
+                    data=csv,
+                    file_name='combined_offset_removed_data.csv',
+                    mime='text/csv',
+                )
+
+                # Store the updated data in the session state for the next tabs
+                st.session_state.data['combined_clocks']['outlier'] = combined_data_df.copy()
+                st.session_state.data['combined_clocks']['smoothing'] = combined_data_df.copy()
+                st.session_state.data['combined_clocks']['stability'] = combined_data_df.copy()
+                st.session_state.data['combined_clocks']['outcome'] = combined_data_df.copy()
+
+        if st.session_state.selected == "Outlier":
+            
+            selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
+            selected_clock_names.append("Combine Clocks")
+
+            selected_clock = st.radio("Select Clock for Outlier Removal", selected_clock_names, horizontal=True)
+
+            if selected_clock != "Combine Clocks":
+                outlier_options = ["None", "Std_Dev Based", "Remove Selected Outliers"]
+
+                if selected_clock not in st.session_state:
+                    st.session_state.outlier_selection = {}
+                    st.session_state.std_threshold = {}
+
+                if selected_clock not in st.session_state.outlier_selection:
+                    st.session_state.outlier_selection[selected_clock] = "None"
+                    st.session_state.std_threshold[selected_clock] = 50.0
+
+                selected_outlier = st.radio(
+                    "Select Outlier Option",
+                    outlier_options,
+                    index=outlier_options.index(st.session_state.outlier_selection[selected_clock]),
+                    horizontal=True
+                )
+
+                st.session_state.outlier_selection[selected_clock] = selected_outlier
+
+                clock_name = selected_clock
+                # Get the latest data for the selected clock up to the outlier tab
+                clock_data = get_latest_data(clock_name, 'outlier').dropna().copy()
+
+                if f'outlier_data_{selected_clock}' not in st.session_state:
+                    st.session_state[f'outlier_data_{selected_clock}'] = clock_data.copy()
+
+                initial_data = st.session_state[f'outlier_data_{selected_clock}']
+
+                if selected_outlier == 'None':
+                    data_to_plot = initial_data['Value']
+                    timestamps = initial_data['Timestamp']
+                    fig = create_plots(timestamps, data_to_plot)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                elif selected_outlier == 'Std_Dev Based':
+                    reset_button_std = st.button("Reset Std_Dev Filter", key=f"reset_std_dev_{selected_clock}")
+
+                    if f"std_threshold_{selected_clock}" not in st.session_state:
+                        st.session_state[f"std_threshold_{selected_clock}"] = 50
+
+                    if reset_button_std:
+                    
+                        previous_data = st.session_state.data[selected_clock]['offset']
+                        st.session_state[f"std_threshold_{selected_clock}"] = 50.0
+                        st.session_state[f'outlier_data_{selected_clock}'] = previous_data.copy()
+                    
+                        cole1, cole2, cole3, cole4 = st.columns(4)
+                        with cole1:
+                            std_threshold = st.number_input(
+                                f"Standard Deviation Multiplier for {selected_clock}",
+                                min_value=0.1,
+                                max_value=100.0,
+                                value=float(st.session_state.get(f"std_threshold_{selected_clock}", 50.0)),
+                                step=0.1,
+                                key=f"std_threshold_input_{selected_clock}_{st.session_state.get(f'std_threshold_{selected_clock}')}",
+                                help = "Minimum threshold limit is 0.1 time of Std Dev and Max threshold limit is 100.0 times of Std Dev in steps of 0.1"
+                            )
+                                                                      
+                        # Directly update session state values and redraw plot
+                        st.session_state[f'std_threshold_{selected_clock}'] = 50
+                        timestamps = previous_data['Timestamp']
+                        data_to_plot = previous_data['Value']
+                        fig = create_plots(timestamps, data_to_plot)
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    else:
+
+                        cole1, cole2, cole3, cole4 = st.columns(4)
+                        with cole1:
+                            std_threshold = st.number_input(
+                                f"Standard Deviation Multiplier for {selected_clock}",
+                                min_value=0.1,
+                                max_value=100.0,
+                                value=float(st.session_state.get(f"std_threshold_{selected_clock}", 50.0)),
+                                step=0.1,
+                                key=f"std_threshold_input_{selected_clock}_{st.session_state.get(f'std_threshold_{selected_clock}')}",
+                                help = "Minimum threshold limit is 0.1 time of Std Dev and Max threshold limit is 100.0 times of Std Dev in steps of 0.1"
+                            )
+
+                        filtered_data, std_dev, new_std_dev = remove_outliers(initial_data, std_threshold, 'Value')
+                        st.session_state[f'outlier_data_{selected_clock}'] = filtered_data
+                        timestamps = st.session_state[f'outlier_data_{selected_clock}']['Timestamp']
+                        data_to_plot = st.session_state[f'outlier_data_{selected_clock}']['Value']
+                        fig_filtered = create_plots(timestamps, data_to_plot)
+                        st.plotly_chart(fig_filtered, use_container_width=True)
+
+                        st.markdown(f"**Standard Deviation for {selected_clock}:** {std_dev:.2f} [ns]")
+                        st.markdown(f"**Max Value:** {np.nanmax(filtered_data['Value']):.2f} [ns]")
+                        st.markdown(f"**Min Value:** {np.nanmin(filtered_data['Value']):.2f} [ns]")
+                        st.markdown(f"**New Standard Deviation (After Removal):** {new_std_dev:.2f} [ns]")
+                    update_action(selected_clock, 'Outlier Filtered', f"Method: {selected_outlier}, Std Dev: {std_threshold}")
+
+                elif selected_outlier == 'Remove Selected Outliers':
+                    filtered_data = st.session_state[f'outlier_data_{selected_clock}']
+                    st.markdown("**Select the outliers using Box select or Lasso select to delete them**")
+                    timestamps = filtered_data['Timestamp']
+                    data_to_plot = filtered_data['Value']
+
+                    reset_button = st.button("Reset Outlier Removal", key=f"reset_outliers_{selected_clock}")
+                    if reset_button:
+                        previous_data = st.session_state.data[selected_clock]['offset']
+                        st.session_state[f'outlier_data_{selected_clock}'] = previous_data.copy()
+                        filtered_data_updated = previous_data.copy()
+                        timestamps = filtered_data_updated['Timestamp']
+                        data_to_plot = filtered_data_updated['Value']
+
+                        # Directly update session state values and redraw plot
+                        st.session_state[f'outlier_data_{selected_clock}'] = previous_data.copy()
+                        fig = create_plots(timestamps, data_to_plot)
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    else:
+                        fig_selection = create_plots(timestamps, data_to_plot)
+                        event_data = st.plotly_chart(fig_selection, key=f"outlier_{selected_clock}", on_select="rerun")
+
+                        if event_data and event_data.selection:
+                            selected_points = event_data.selection["points"]
+
+                            if selected_points:
+                                selected_points_set = set(point["point_index"] for point in selected_points if "point_index" in point)
+
+                                filtered_data_updated = filtered_data.copy()
+                                filtered_data_updated.loc[filtered_data_updated.index.isin(selected_points_set), 'Value'] = np.nan
+                                st.session_state[f'outlier_data_{selected_clock}'] = filtered_data_updated
+                                st.success(f"Removed {len(selected_points)} outliers from {selected_clock}")
+
+                                timestamps = filtered_data_updated['Timestamp']
+                                data_to_plot = filtered_data_updated['Value']
+                                fig_updated = create_plots(timestamps, data_to_plot)
+                                st.plotly_chart(fig_updated, use_container_width=True)
+
+                # Store the updated data in the session state for the current tab
+                st.session_state.data[selected_clock]['outlier'] = st.session_state[f'outlier_data_{selected_clock}'].copy()
+                # Store the updated data in the session state for the next tabs
+                st.session_state.data[selected_clock]['smoothing'] = st.session_state[f'outlier_data_{selected_clock}'].copy()
+                st.session_state.data[selected_clock]['stability'] = st.session_state[f'outlier_data_{selected_clock}'].copy()
+                st.session_state.data[selected_clock]['outcome'] = st.session_state[f'outlier_data_{selected_clock}'].copy()
+
+            else:
+                combined_data = []
+                combined_info = []
+
+                for index, row in st.session_state.df_display.iterrows():
+                    if row["Choose Clock"] == True:
+                        clock_name = row["Clock Name"]
+
+                        # Get the latest data for the clock up to the outlier tab
+                        clock_data = get_latest_data(clock_name, 'outlier').dropna().copy()
+
+                        if not clock_data.empty:
+                            max_value = clock_data['Value'].max()
+                            min_value = clock_data['Value'].min()
+                            std_dev = clock_data['Value'].std()
+                        else:
+                            max_value = None
+                            min_value = None
+                            std_dev = None
+                            print(f"Warning: Clock {clock_name} dataframe is empty")
+
+                        combined_info.append({
+                            "Clock Name": clock_name,
+                            "Max Value": max_value,
+                            "Min Value": min_value,
+                            "Std Dev": std_dev
+                        })
+
+                        # Rename columns for the clock data
+                        clock_data = clock_data.rename(columns={'Timestamp': f'Timestamp_{clock_name}', 'Value': f'Outlier_Removed_Value_{clock_name}'})
+                        combined_data.append(clock_data)
+
+                if combined_data:
+                    # Combine data with only Timestamp and Outlier_Removed_Value columns
+                    combined_df = pd.concat(combined_data, axis=1)
+
+                    fig = go.Figure()
+                    for clock_data, row in zip(combined_data, st.session_state.df_display.iterrows()):
+                        clock_name = row[1]["Clock Name"]
+                        fig.add_trace(go.Scatter(
+                            x=clock_data[f'Timestamp_{clock_name}'],
+                            y=clock_data[f'Outlier_Removed_Value_{clock_name}'],
+                            mode='markers',
+                            name=clock_name
+                        ))
+
+                    fig.update_xaxes(tickformat=".3f")
+                    fig.update_layout(
+                        title="Outlier Removed Data of Clocks",
+                        xaxis_title="MJD",
+                        yaxis_title="Value [ns]",
+                        yaxis=dict(tickmode='auto', nticks=10),
+                        showlegend=True,
+                        xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+                        height=600
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    st.markdown("### Combined Information for Each Clock")
+                    combined_info_df = pd.DataFrame(combined_info)
+                    st.table(combined_info_df[['Clock Name', 'Max Value', 'Min Value', 'Std Dev']])
+
+                    combined_df = combined_df.round(2)
+                    csv_header = "# Combined Clock Data\n"
+                    for info in combined_info:
+                        csv_header += f"# Clock Name: {info['Clock Name']}, Max Value: {info['Max Value']}, Min Value: {info['Min Value']}, Std Dev: {info['Std Dev']}\n"
+                    csv_header += "# Data\n"
+                    csv = csv_header + combined_df.to_csv(index=False, lineterminator='\n')
+                    st.download_button(
+                        label="Download Combined Data as CSV",
+                        data=csv,
+                        file_name='combined_outlier_removed_data.csv',
+                        mime='text/csv',
+                    )
+
+                    # Store the updated data in the session state for the current tab
+                    st.session_state.data['combined_clocks']['outlier'] = combined_df.copy()
+
+        if st.session_state.selected == "Smoothing": 
+            # Ensure all selected clocks are accounted for
+            selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
+            selected_clock_names.append("Combine Clocks")
+
+            # Select clock for smoothing
+            selected_clock = st.radio("Select Clock for smoothing", selected_clock_names, horizontal=True)
+
+            action_details = []
+
+            if selected_clock != "Combine Clocks":
+                # Get the latest data for the selected clock up to the outlier tab
+                clock_data = get_latest_data(selected_clock, 'outlier').dropna().copy()
+                # st.write("Clock Data before Smoothing:", clock_data)  # Debug statement
+
+                # Select smoothing method
+                smoothing_method = st.radio("Select Smoothing Method", ['None', 'Moving Avg (non overlapping)', 'Moving Avg (overlapping)'], index=0, horizontal=True)
+
+                if smoothing_method == 'None':
+                    # Display initial data plot
+                    timestamps = clock_data['Timestamp']
+                    data_to_plot = clock_data['Value']
+                    fig = create_plots(timestamps, data_to_plot)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Store the raw data in session state for further use
+                    st.session_state[f'smoothed_data_{selected_clock}'] = clock_data.copy()
+                    st.session_state[f'smoothing_method_{selected_clock}'] = 'None'
+                    st.session_state[f'window_size_{selected_clock}'] = "N/A"
+                    action_details.append({
+                        "Clock": selected_clock,
+                        "Selection": "None",
+                        "Sampling Window": "N/A",
+                        "Mean Value": clock_data['Value'].mean(),
+                        "Std Dev": clock_data['Value'].std()
+                    })
+
+                elif smoothing_method == 'Moving Avg (overlapping)':
+                    max_window = len(clock_data[clock_data['Value'].notna()]) // 2  # Ensure max_window is at least 1
+                    window_size_from_state = st.session_state.get(f'window_size_{selected_clock}', None)
+                    if isinstance(window_size_from_state, str) and window_size_from_state.isdigit():
+                        window_size_from_state = int(window_size_from_state)
+                    else:
+                        window_size_from_state = 10  # Default value if not numeric
+
+                    colme1, colme2, colme3, colme4 = st.columns(4)
+
+                    with colme1:
+                        window_size = st.number_input(
+                            "Sampling Window Size",
+                            min_value=1,
+                            max_value=max_window,
+                            value=min(window_size_from_state, max_window),
+                            step=1
+                        )
+
+                    # Store the window size and smoothing method in session state
+                    st.session_state[f'window_size_{selected_clock}'] = window_size
+                    st.session_state[f'smoothing_method_{selected_clock}'] = 'Moving Avg (overlapping)'
+
+                    # Calculate moving average and adjust timestamps
+                    timestamps = clock_data['Timestamp'].values
+                    valid_timestamps, smoothed_data = smoothing_overlap(clock_data['Value'].values, window_size, timestamps)
+
+                    # Ensure lengths are the same before creating DataFrame
+                    if len(valid_timestamps) != len(smoothed_data):
+                        raise ValueError("Length of valid_timestamps and smoothed_data must be the same")
+
+                    # Plot raw data and moving average with different colors
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=timestamps, y=clock_data['Value'], mode='markers', name='Raw Data', marker=dict(color='blue')))
+                    fig.add_trace(go.Scatter(x=valid_timestamps, y=smoothed_data, mode='lines', name='Moving Average', line=dict(color='red')))
+                    fig.update_layout(
+                        title=f"Data for {selected_clock} with Moving Average (overlapping)",
+                        xaxis_title="Timestamp",
+                        yaxis_title="Value"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Store the smoothed data in session state for further use
+                    smoothed_data_df = pd.DataFrame({'Timestamp': valid_timestamps, 'Value': smoothed_data}).reset_index(drop=True)
+                    st.session_state[f'smoothed_data_{selected_clock}'] = smoothed_data_df
+                    update_action(selected_clock, 'Smoothed', f"Method: {smoothing_method}, Window Size: {window_size}")
+
+                    action_details.append({
+                        "Clock": selected_clock,
+                        "Selection": "Moving Average (overlapping)",
+                        "Sampling Window": window_size,
+                        "Mean Value": smoothed_data.mean(),
+                        "Std Dev": smoothed_data.std()
+                    })
+
+                elif smoothing_method == 'Moving Avg (non overlapping)':
+                    max_window = len(clock_data[clock_data['Value'].notna()]) // 2  # Ensure max_window is at least 1
+                    window_size_from_state = st.session_state.get(f'window_size_{selected_clock}', None)
+                    if isinstance(window_size_from_state, str) and window_size_from_state.isdigit():
+                        window_size_from_state = int(window_size_from_state)
+                    else:
+                        window_size_from_state = 10  # Default value if not numeric
+
+                    colme1, colme2, colme3, colme4 = st.columns(4)
+
+                    with colme1:
+                        window_size = st.number_input(
+                            "Sampling Window Size",
+                            min_value=1,
+                            max_value=max_window,
+                            value=min(window_size_from_state, max_window),
+                            step=1
+                        )
+
+                    # Store the window size and smoothing method in session state
+                    st.session_state[f'window_size_{selected_clock}'] = window_size
+                    st.session_state[f'smoothing_method_{selected_clock}'] = 'Moving Avg (non overlapping)'
+
+                    # Calculate moving average for non-overlapping case and adjust timestamps
+                    timestamps = clock_data['Timestamp'].values
+                    valid_timestamps, smoothed_data = smoothing_nonoverlap(clock_data['Value'].values, window_size, timestamps)
+
+                    # Ensure lengths are the same before creating DataFrame
+                    if len(valid_timestamps) != len(smoothed_data):
+                        raise ValueError("Length of valid_timestamps and smoothed_data must be the same")
+
+                    # Plot raw data and moving average with different colors
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=timestamps, y=clock_data['Value'], mode='markers', name='Raw Data', marker=dict(color='blue')))
+                    fig.add_trace(go.Scatter(x=valid_timestamps, y=smoothed_data, mode='lines', name='Moving Average', line=dict(color='red')))
+                    fig.update_layout(
+                        title=f"Data for {selected_clock} with Moving Average (non overlapping)",
+                        xaxis_title="Timestamp",
+                        yaxis_title="Value"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Store the smoothed data in session state for further use
+                    smoothed_data_df = pd.DataFrame({'Timestamp': valid_timestamps, 'Value': smoothed_data}).reset_index(drop=True)
+                    st.session_state[f'smoothed_data_{selected_clock}'] = smoothed_data_df
+                    update_action(selected_clock, 'Smoothed', f"Method: {smoothing_method}, Window Size: {window_size}")
+
+                    action_details.append({
+                        "Clock": selected_clock,
+                        "Selection": "Moving Avg (non overlapping)",
+                        "Sampling Window": window_size,
+                        "Mean Value": smoothed_data.mean(),
+                        "Std Dev": smoothed_data.std()
+                    })
+
+                # Store the updated data in the session state for the current tab
+                st.session_state.data[selected_clock]['smoothing'] = st.session_state[f'smoothed_data_{selected_clock}'].copy()
+                # Store the updated data in the session state for the next tabs
+                st.session_state.data[selected_clock]['stability'] = st.session_state[f'smoothed_data_{selected_clock}'].copy()
+                st.session_state.data[selected_clock]['outcome'] = st.session_state[f'smoothed_data_{selected_clock}'].copy()
+
+            else:
+                combined_data = []
+                combined_info = []
+
+                for index, row in st.session_state.df_display.iterrows():
+                    if row["Clock Name"] in selected_clock_names[:-1]:
+                        clock_name = row["Clock Name"]
+                        # Get the latest data for the clock up to the smoothing tab
+                        clock_data = get_latest_data(clock_name, 'smoothing').dropna().copy()
+
+                        st.session_state[f'smoothed_data_{clock_name}'] = clock_data.copy()
+                        combined_data.append((clock_data, clock_name))
+
+                        max_value = clock_data['Value'].max()
+                        min_value = clock_data['Value'].min()
+                        std_dev = clock_data['Value'].std()
+
+                        combined_info.append({
+                            "Clock Name": clock_name,
+                            "Max Value": max_value,
+                            "Min Value": min_value,
+                            "Std Dev": std_dev
+                        })
+
+                # Combine all data into one DataFrame
+                combined_df_list = []
+                for data, name in combined_data:
+                    combined_df_list.append(data)
+
+                combined_df = pd.concat(combined_df_list, axis=1)
+
+                # Plot combined data
+                fig_combined = go.Figure()
+                for data, name in combined_data:
+                    timestamp_key = 'Timestamp'
+                    value_key = 'Value'
+                    if timestamp_key in data and value_key in data:
+                        fig_combined.add_trace(go.Scatter(
+                            x=data[timestamp_key],
+                            y=data[value_key],
+                            mode='markers',
+                            name=name
+                        ))
+
+                fig_combined.update_layout(
+                    title="Combined Data",
+                    xaxis_title="MJD",
+                    yaxis_title="Smoothed Phase data [ns]",
+                    height=600
+                )
+                st.plotly_chart(fig_combined, use_container_width=True)
+
+                # Add action details for combined clocks
+                for data, name in combined_data:
+                    method = st.session_state.get(f'smoothing_method_{name}', "None")
+                    window_size = "N/A" if method == "None" else st.session_state.get(f'window_size_{name}', "N/A")
+                    action_details.append({
+                        "Clock": name,
+                        "Selection": method,
+                        "Sampling Window": window_size,
+                        "Mean Value": data['Value'].mean(),
+                        "Std Dev": data['Value'].std()
+                    })
+
+                # Convert the 'Sampling Window' column to string to avoid serialization issues
+                action_df = pd.DataFrame(action_details)
+                action_df['Sampling Window'] = action_df['Sampling Window'].astype(str)
+
+                # Download combined data as CSV
+                combined_df = combined_df.round(2)
+                csv_header = "# Combined Clock Data\n"
+                for action in action_details:
+                    csv_header += f"# Clock: {action['Clock']}, Selection: {action['Selection']}, Sampling Window: {action['Sampling Window']}, Mean Value: {action['Mean Value']:.2f}, Std Dev: {action['Std Dev']:.2f}\n"
+                csv_header += "# Data\n"
+                csv = csv_header + combined_df.to_csv(index=False)
+                st.download_button(
+                    label="Download Combined Data as CSV",
+                    data=csv,
+                    file_name='combined_data.csv',
+                    mime='text/csv',
+                )
+
+                # Display action details table
+                st.session_state.smoothed_data = combined_df
+                st.markdown("### Action Details for Each Clock")
+                st.table(action_df)
+
+        if st.session_state.selected == "Stability": 
+            selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
+
+            # st.markdown("### Stability Analysis [Courtesy: Allan Tools]")
+            # Center-align the markdown content using HTML
+            # st.markdown("<h3 style='text-align: center;'>Stability Analysis [Courtesy: Allan Tools]</h3>", unsafe_allow_html=True)
+            
+            st.markdown("""
+                <div style='text-align: center;'>
+                    <h3>Stability Analysis</h3>
+                    <p><em>[Courtesy: Allan Tools (Note: Computes stability for continiuous data only)]</em></p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            col1, col2 = st.columns(2)
+
+            with col1:
+                # st.markdown("#### Select Stability Analysis Type")
+                analysis_types = ["ADEV", "MDEV", "OADEV", "TDEV"]
+                analysis_selection = st.multiselect("Choose analysis types:", analysis_types, default=["ADEV"])
+
+            with col2:
+                # st.markdown("#### Select Clocks:")
+                selected_clocks = st.multiselect("Choose clocks:", selected_clock_names, default=[selected_clock_names[0]])
+
+            plot_data = {}
+            csv_data_dict = {}
+            colors = ['orange', 'blue', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
+            markers = ['o', '*', 's', 'D', '^', 'v', '<', '>', 'P', 'X']
+
+            for clock in selected_clocks:
+                clock_name = clock
+
+                # Get the latest data for the selected clock up to the stability tab
+                clock_data = get_latest_data(clock_name, 'stability').dropna().copy()
+                
+                timestamps = clock_data['Timestamp'].values
+                values = clock_data['Value'].values * 1E-9
+
+                plot_data[clock_name] = (timestamps, values)
+                csv_data_dict[clock_name] = clock_data.copy()
+                csv_data_dict[clock_name]['Value'] *= 1E-9
+
+            for analysis_type in analysis_selection:
+                plt.figure(figsize=(10, 5))
+                all_tau_values = []
+                all_dev_values = []
+                color_idx = 0
+                tau_values_set = False  # New flag to track if tau_values have been set
+                for clock, (timestamps, values) in plot_data.items():
+                    color = colors[color_idx % len(colors)]
+                    marker = markers[color_idx % len(markers)]
+                    if st.session_state.data_type == 'Phase/Time Data':
+                        input_data_type = "phase"
+                    elif st.session_state.data_type == 'Frequency Data':
+                        input_data_type = "frequency"
+
+                    if analysis_type == "TDEV":
+                        tau_values, dev_values = plot_tdev(values, st.session_state.tau0, input_data_type, label=clock, color=color, marker=marker)
+                    elif analysis_type == "MDEV":
+                        tau_values, dev_values = plot_mdev(values, st.session_state.tau0, input_data_type, label=clock, color=color, marker=marker)
+                    elif analysis_type == "ADEV":
+                        tau_values, dev_values = plot_adev(values, st.session_state.tau0, input_data_type, label=clock, color=color, marker=marker)
+                    elif analysis_type == "OADEV":
+                        tau_values, dev_values = plot_oadev(values, st.session_state.tau0, input_data_type, label=clock, color=color, marker=marker)
+                    color_idx += 1
+
+                    if not tau_values_set:
+                        all_tau_values.append(tau_values)
+                        tau_values_set = True
+                    all_dev_values.append(dev_values)
+
+                    # Ensure all_tau_values and all_dev_values are of the same length before updating the session state
+                    max_length = max(len(tau_values), len(dev_values))
+                    tau_values = np.array(tau_values, dtype=float)
+                    tau_values_padded = np.pad(tau_values, (0, max_length - len(tau_values)), constant_values=np.nan)
+                    dev_values_padded = np.pad(dev_values, (0, max_length - len(dev_values)), constant_values=np.nan)
+
+                    # Update stability results for the current clock and analysis type
+                    update_stability_results(clock, analysis_type, tau_values_padded, dev_values_padded)
+                    
+                st.pyplot(plt)
+
+                # Ensure all_tau_values and all_dev_values are of the same length
+                max_length = max(max(len(tau) for tau in all_tau_values), max(len(dev) for dev in all_dev_values))
+                all_tau_values = [np.pad(tau, (0, max_length - len(tau)), constant_values=np.nan) for tau in all_tau_values]
+                all_dev_values = [np.pad(dev, (0, max_length - len(dev)), constant_values=np.nan) for dev in all_dev_values]
+
+                # Save plot as image
+                plot_img_path = f'{analysis_type}_plot.png'
+                plt.savefig(plot_img_path)
+
+                # Prepare CSV data with header information
+                csv_header = f"# Stability Analysis: {analysis_type}\n"
+                for clock in selected_clocks:
+                    start_range = st.session_state.clock_ranges.get(clock, {}).get('start_range', 'N/A')
+                    end_range = st.session_state.clock_ranges.get(clock, {}).get('end_range', 'N/A')
+                    csv_header += f"# Clock: {clock}, Start Range: {start_range}, End Range: {end_range}\n"
+                csv_header += "# Tau (s)," + ",".join([f"{clock}" for clock in selected_clocks]) + "\n"
+
+                # Create a final DataFrame where the 'Tau (s)' column is filled correctly
+                final_rows = []
+
+                # Get the maximum length of all tau_values
+                max_length = max(len(tau) for tau in all_tau_values)
+
+                # Iterate through the rows up to the maximum length
+                for i in range(max_length):
+                    row_data = [all_tau_values[0][i] if i < len(all_tau_values[0]) else '']
+                    for dev_values in all_dev_values:
+                        if i < len(dev_values):
+                            row_data.append(dev_values[i])
+                        else:
+                            row_data.append('')
+                    final_rows.append(row_data)
+
+                # Flatten the column headers for the final DataFrame
+                columns = ['Tau (s)'] + [f"{clock}" for clock in selected_clocks]
+
+                # Create the final DataFrame
+                final_df = pd.DataFrame(final_rows, columns=columns)
+
+                # Convert DataFrame to CSV format with proper rounding
+                final_df = final_df.applymap(lambda x: f"{x:.2e}" if pd.notnull(x) else "")
+                csv_data = csv_header + final_df.to_csv(index=False, lineterminator='\n')
+
+                # Apply custom CSS for sticky header
+                st.markdown(
+                    """
+                    <style>
+                    .stDataFrame thead tr th {
+                        position: sticky;
+                        top: 0;
+                        background: white;
+                        z-index: 1;
+                    }
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # Download buttons side by side
+                col1, col2, col3, col4, col5 = st.columns(5)
+                with col2:
+                    st.download_button(
+                        label=f"Download {analysis_type} Data",
+                        data=csv_data,
+                        file_name=f'{analysis_type}_data.csv',
+                        mime='text/csv'
+                    )
+                with col4:
+                    with open(plot_img_path, 'rb') as file:
+                        st.download_button(
+                            label=f"Download {analysis_type} Plot",
+                            data=file,
+                            file_name=plot_img_path,
+                            mime="image/png"
+                        )
+
+                # Mark the stability analysis as done for each selected clock
+                for clock in selected_clocks:
+                    update_action(clock, f'{analysis_type} Analysis', 'Done')
+
+        if st.session_state.selected == "Out come": 
+            st.markdown("### Outcome of the Actions")
+            # Ensure all selected clocks are accounted for
+            selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
+            # selected_clock_names.append("Combine Clocks")
+
+            # Display the outcome table
+            transform_and_display()
+
+
+
+if __name__ == "__main__":
+    run_once = 0
+    main()
