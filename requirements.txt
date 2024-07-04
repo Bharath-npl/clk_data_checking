@@ -4,3 +4,4 @@ matplotlib
 streamlit
 plotly
 streamlit_option_menu
+plotly_events
