@@ -3,5 +3,5 @@ pandas
 matplotlib
 streamlit
 plotly
-streamlit-option-menu
+streamlit-option-menu==0.3.12
 plotly_events
