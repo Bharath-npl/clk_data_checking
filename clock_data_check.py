@@ -1,6 +1,6 @@
 
 # *********************************************
-# ****************** Clock Data Analyser ******
+# ****************** Clock Data Checking ******
 
 
 # to tune this code in your local PC use the follwoing command **
@@ -11,7 +11,6 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, date, time
-import warnings
 import numpy as np
 import io
 from streamlit_option_menu import option_menu
@@ -331,7 +330,6 @@ def process_inputs(files):
     
 
 
-
 # Define a function to create an empty DataFrame if not already in session state
 def initialize_display_df():
     if 'df_display' not in st.session_state or st.session_state.df_display.empty:
@@ -427,6 +425,9 @@ def get_latest_data(clock_name, current_tab):
 
 # Function to update action
 def update_action(clock_name, action, value):
+    if clock_name == "Combine Clocks":
+        return  # Skip "Combine Clocks"
+
     # Check if the clock already exists in the DataFrame
     idx = st.session_state.out_display[st.session_state.out_display['Clock Name'] == clock_name].index
    
@@ -491,12 +492,15 @@ def format_scientific(value):
         return f"{value:.2e}"
     return value
 
-def transform_and_display():
+def transform_and_display(selected_clock_names):
     if 'out_display' not in st.session_state:
         return
 
+    # Filter out clocks that are not in the selected clock names
+    out_display_filtered = st.session_state.out_display[st.session_state.out_display['Clock Name'].isin(selected_clock_names)]
+
     # Extract basic info columns and prepare the base DataFrame
-    basic_info = st.session_state.out_display.drop(columns=["ADEV", "MDEV", "OADEV", "TDEV"]).set_index('Clock Name').T
+    basic_info = out_display_filtered.drop(columns=["ADEV", "MDEV", "OADEV", "TDEV"]).set_index('Clock Name').T
     basic_info.insert(0, '', basic_info.index)
 
     # Initialize a list to collect final DataFrame rows
@@ -505,7 +509,7 @@ def transform_and_display():
     # Process each stability type and append results
     for analysis_type in ["ADEV", "MDEV", "OADEV", "TDEV"]:
         # Append the analysis type row
-        analysis_done_row = [f"{analysis_type} Analysis, Done"] + [""] * (basic_info.shape[1] - 1)
+        analysis_done_row = [f"{analysis_type} Analysis"] + [""] * (basic_info.shape[1] - 1)
         final_rows.append(analysis_done_row)
 
         # Collect stability results
@@ -541,9 +545,9 @@ def transform_and_display():
     final_df = final_df.applymap(format_scientific)
 
     # Display the final DataFrame
-    st.dataframe(final_df, use_container_width=True)
+    st.dataframe(final_df, use_container_width=True, hide_index=False)
 
-    # Apply custom CSS for sticky header
+     # Apply custom CSS for sticky header and remove index
     st.markdown(
         """
         <style>
@@ -553,16 +557,847 @@ def transform_and_display():
             background: white;
             z-index: 1;
         }
+        .stDataFrame tbody tr:first-child {
+            position: sticky;
+            top: 40px;  /* Adjust as necessary based on your header height */
+            background: white;
+            z-index: 1;
+        }
         .stDataFrame tbody th {
             position: sticky;
             left: 0;
             background: white;
             z-index: 1;
         }
+        .stDataFrame thead th:first-child,
+        .stDataFrame tbody th:first-child {
+            display: none;
+        }
+        .stDataFrame thead tr:first-child th {
+            display: none;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+# Function to parse timestamps
+def parse_timestamp(timestamp):
+    try:
+        return float(timestamp)
+    except ValueError:
+        pass
+    datetime_formats = ['%Y-%m-%d %H:%M:%S', '%H:%M:%S']
+    for fmt in datetime_formats:
+        try:
+            dt = datetime.strptime(timestamp, fmt)
+            if fmt == '%H:%M:%S':
+                today = datetime.today().date()
+                return datetime.combine(today, dt.time())
+            return dt
+        except ValueError:
+            continue
+    raise ValueError(f"Unsupported timestamp format: {timestamp}")
+
+# Function to calculate x-intervals
+def x_interval(data):
+    x = [parse_timestamp(ts) for ts in data['Timestamp']]
+    dx = []
+    for i in range(1, len(x)):
+        try:
+            if isinstance(x[i], float) and isinstance(x[i-1], float):
+                diff = x[i] - x[i-1]
+            elif isinstance(x[i], datetime) and isinstance(x[i-1], datetime):
+                diff = (x[i] - x[i-1]).total_seconds()
+            else:
+                raise TypeError("Mismatch in timestamp types or unsupported type")
+            
+            if diff != 0:
+                dx.append(diff)
+        except TypeError as e:
+            print(f"TypeError: {e}")
+            continue  # Skip this interval if there is a type error
+
+    # Ensure that x and dx have the same length
+    x = x[1:len(dx) + 1]
+    st.write(x)
+
+    return x, dx
+
+# Function to filter data
+def update_filtered_data(start, end):
+    filtered_data = st.session_state['clk_data_full'][
+        (st.session_state['clk_data_full']["Timestamp"] >= start) &
+        (st.session_state['clk_data_full']["Timestamp"] <= end)
+    ]
+    st.session_state['filtered_data'] = filtered_data
+
+
+# Initialize the state for clock ranges if not already initialized
+def initialize_clock_ranges():
+    if 'clock_ranges' not in st.session_state:
+        st.session_state.clock_ranges = {}
+    for index, row in st.session_state.df_display.iterrows():
+        clock_name = row["Clock Name"]
+        if clock_name not in st.session_state.clock_ranges:
+            clk_analysis = get_latest_data(clock_name, 'data_range')
+            st.session_state.clock_ranges[clock_name] = {
+                'start_range': clk_analysis["Timestamp"].iloc[0],
+                'end_range': clk_analysis["Timestamp"].max()
+            }
+
+
+def create_plots(timestamps, data):
+# """
+# This function creates a plotly figure with various subplots for data visualization.
+
+# Args:
+#     timestamps: A list or array containing the timestamps for the data.
+#     data: A list or array containing the data values.
+
+# Returns:
+#     A plotly figure object.
+# """
+
+    fig = make_subplots(
+        rows=2,
+        cols=2,
+        subplot_titles=("", "Histogram", "Sampling Interval", ""),
+        specs=[[{'type': 'scatter'}, {'type': 'histogram'}],
+                [{'type': 'scatter'}, None]],
+        column_widths=[0.85, 0.15],
+        row_heights=[0.80, 0.20]
+    )
+
+    trace = go.Scatter(x=timestamps, y=data, mode='markers', name='Original')
+    fig.add_trace(trace, row=1, col=1)
+    fig.add_trace(go.Histogram(y=data, nbinsx=50, name='Histogram'), row=1, col=2)
+
+    # Dummy implementation for calculating sampling interval
+    intervals = timestamps.diff().fillna(0)[1:] # Exclude the first interval
+    interval_timestamps = timestamps[1:]  # Exclude the first timestamp to match intervals
+
+    fig.add_trace(
+        go.Scatter(
+            x=interval_timestamps,
+            y=intervals,
+            mode='lines+markers',
+            name='Sampling Interval',
+            marker=dict(color='royalblue'),
+            line=dict(dash='dot')
+        ),
+        row=2, col=1
+    )
+    fig.update_xaxes(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none', row=2, col=1)
+    fig.update_xaxes(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none', row=1, col=1)
+    
+    # Determine y-axis title based on tau0 value
+    tau0 = st.session_state.input_data['tau0']
+    y_axis_title = "Days" if tau0 >= 86400 else "Seconds"
+    fig.update_yaxes(title_text=y_axis_title, row=2, col=1)  # Set y-axis label for the subplot in row 2, col 1
+
+    fig.update_layout(
+        title="Clock Data",
+        xaxis_title="MJD",
+        yaxis_title="Phase data [ns]",
+        yaxis=dict(tickmode='auto', nticks=10),
+        showlegend=False,
+        xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+        height=600
+
+    )
+
+    return fig
+
+# Function to remove trend
+def remove_trend(data, trend_type):
+    x = np.arange(len(data))
+    if trend_type == 'Linear':
+        p = np.polyfit(x, data, 1)
+        trend = np.polyval(p, x)
+        return data - trend, p[0], [p[1]]  # Return residuals and slope and intercept
+    elif trend_type == 'Quadratic':
+        p = np.polyfit(x, data, 2)
+        trend = np.polyval(p, x)
+        return data - trend, None, p  # Return residuals and coefficients
+    else:
+        trend = np.zeros_like(data)
+        return data - trend, None, None  # Return residuals
+        
+
+def remove_offset(data):
+    mean_value = np.mean(data)
+    offset_removed_data = data - mean_value
+    return offset_removed_data, mean_value
+
+
+def remove_outliers(data, std_threshold, value_col="Value"):
+    mean = np.mean(data[value_col])
+    std_dev = np.std(data[value_col])
+    filtered_data = data[np.abs(data[value_col] - mean) <= std_threshold * std_dev]
+    return filtered_data, std_dev, np.std(filtered_data[value_col])
+
+
+# Symmetric Moving average filter for both even and odd window sizes
+def moving_average(data, window_size):
+    half_window = window_size // 2
+    if window_size % 2 == 0:
+        # Even window size
+        extended_data = np.pad(data, (half_window - 1, half_window), mode='reflect')
+    else:
+        # Odd window size
+        extended_data = np.pad(data, (half_window, half_window), mode='reflect')
+    
+    smoothed_data = np.convolve(extended_data, np.ones(window_size) / window_size, mode='valid')
+    return smoothed_data
+
+# Calculate moving average
+def smoothing_overlap(data, window_size, timestamps):
+    smoothed_data = moving_average(data, window_size)
+    half_window = window_size // 2
+    if window_size % 2 == 0:
+        valid_timestamps = timestamps[half_window - 1: -half_window]
+    else:
+        valid_timestamps = timestamps[half_window: -half_window]
+
+    # Ensure lengths are the same
+    valid_timestamps = valid_timestamps[:len(smoothed_data)]
+    smoothed_data = smoothed_data[:len(valid_timestamps)]
+    
+    return valid_timestamps, smoothed_data
+
+# Calculate moving average for overlapping case
+def smoothing_nonoverlap(data, window_size, timestamps):
+    n = len(data)
+    num_segments = n // window_size
+
+    # Only consider full segments
+    data = data[:num_segments * window_size]
+    timestamps = timestamps[:num_segments * window_size]
+
+    # Reshape data to have num_segments rows, each of length window_size
+    reshaped_data = data.reshape(num_segments, window_size)
+    reshaped_timestamps = timestamps.reshape(num_segments, window_size)
+
+    # Compute the mean for each segment
+    smoothed_data = reshaped_data.mean(axis=1)
+    valid_timestamps = reshaped_timestamps.mean(axis=1)
+
+    return valid_timestamps, smoothed_data
+
+def read_data(data):
+    return data
+
+def plot_mdev(data,sampling_int,data_type, label=None, color='orange', marker='o'):
+    # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
+    # tau_values = [2**i for i in range(max_tau_exponent + 1)]
+    max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
+    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+    
+    # data_type = "phase"
+    # taus, ad, ade, ns = adev(data, (1/sampling_int), taus=tau_values)
+
+
+    tau_used, md, mderr, ns = mdev(data,(1/sampling_int), data_type, tau_values)
+
+    plt.loglog(tau_used, md, marker=marker, color=color, label=label)
+    plt.xlabel('Tau (s)')
+    plt.ylabel('Modified Allan Deviation')
+    plt.title('Modified Allan Deviation (MDEV)')
+    plt.legend()
+    plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
+    plt.minorticks_on()
+    plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
+    return tau_used, md
+
+def plot_tdev(data, sampling_int, data_type, label=None, color='blue', marker='*'):
+    # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
+    # tau_values = [2**i for i in range(max_tau_exponent + 1)]
+
+    max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
+    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+                
+    # data_type = "phase"
+    taus, td, tde, ns = tdev(data, (1/sampling_int), data_type,  tau_values)
+
+    plt.loglog(taus, td, marker=marker, color=color, label=label)
+    plt.xlabel('Tau (s)')
+    plt.ylabel('Time Deviation [s]')
+    plt.title('Time Deviation (TDEV)')
+    plt.legend()
+    plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
+    plt.minorticks_on()
+    plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
+    return taus, td
+
+def plot_oadev(data, sampling_int, data_type, label=None, color='red', marker='^'):
+    # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
+    # tau_values = [2**i for i in range(max_tau_exponent + 1)]
+
+    max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
+    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+                
+    # data_type = "phase"
+
+    taus, ad, ade, ns = oadev(data, (1/sampling_int), data_type, taus=tau_values)
+    plt.loglog(taus, ad, marker=marker, color=color, label=label)
+    plt.xlabel('Tau (s)')
+    plt.ylabel('Overlapping Allan Deviation')
+    plt.title('Overlapping Allan Deviation (OADEV)')
+    plt.legend()
+    plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
+    plt.minorticks_on()
+    plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
+    return taus, ad
+
+def plot_adev(data, sampling_int, data_type, label=None, color='green', marker='s'):
+    # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
+    # tau_values = [2**i for i in range(max_tau_exponent + 1)]
+    # Calculate the maximum tau exponent so that tau_values remain less than the length of data
+    max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
+    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+    
+
+    taus, ad, ade, ns = adev(data, (1/sampling_int), data_type,taus=tau_values)
+    plt.loglog(taus, ad, marker=marker, color=color, label=label)
+    plt.xlabel('Tau (s)')
+    plt.ylabel('Allan Deviation')
+    plt.title('Allan Deviation (ADEV)')
+    plt.legend()
+    plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
+    plt.minorticks_on()
+    plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
+    return taus, ad
+
+
+def mdev(data, rate=1.0, data_type="phase", taus=None):
+    """  Modified Allan deviation.
+    Used to distinguish between White and Flicker Phase Modulation.
+
+    .. math::
+
+        \\sigma^2_{MDEV}(m\\tau_0) = { 1 \\over 2 (m \\tau_0 )^2 (N-3m+1) }
+        \\sum_{j=1}^{N-3m+1} \\left[
+        \\sum_{i=j}^{j+m-1} {x}_{i+2m} - 2x_{i+m} + x_{i} \\right]^2
+
+    Parameters
+    ----------
+    data: np.array
+        Input data. Provide either phase or frequency (fractional,
+        adimensional).
+    rate: float
+        The sampling rate for data, in Hz. Defaults to 1.0
+    data_type: {'phase', 'freq'}
+        Data type, i.e. phase or frequency. Defaults to "phase".
+    taus: np.array
+        Array of tau values, in seconds, for which to compute statistic.
+        Optionally set taus=["all"|"octave"|"decade"] for automatic
+        tau-list generation.
+
+    Returns
+    -------
+    (taus2, md, mde, ns): tuple
+        Tuple of values
+    taus2: np.array
+        Tau values for which td computed
+    md: np.array
+        Computed mdev for each tau value
+    mde: np.array
+        mdev errors
+    ns: np.array
+        Values of N used in each mdev calculation
+
+    References
+    ----------
+    * NIST [SP1065]_ eqn (14), page 17.
+    * http://www.leapsecond.com/tools/adev_lib.c
+    """
+    phase = input_to_phase(data, rate, data_type)
+    
+    (phase, ms, taus_used) = tau_generator(phase, rate, "mdev", taus=taus)
+    data, taus = np.array(phase), np.array(taus)
+
+    md = np.zeros_like(ms, dtype=np.float64)
+    mderr = np.zeros_like(ms, dtype=np.float64)
+    ns = np.zeros_like(ms)
+    
+    # this is a 'loop-unrolled' algorithm following
+    # http://www.leapsecond.com/tools/adev_lib.c
+    for idx, m in enumerate(ms):
+        m = int(m)  # without this we get: VisibleDeprecationWarning:
+        # using a non-integer number instead of an integer
+        # will result in an error in the future
+        tau = taus_used[idx]
+
+        # First loop sum
+        d0 = phase[0:m]
+        d1 = phase[m:2*m]
+        d2 = phase[2*m:3*m]
+        e = min(len(d0), len(d1), len(d2))
+        v = np.sum(d2[:e] - 2*d1[:e] + d0[:e])
+        s = v * v
+
+        # Second part of sum
+        d3 = phase[3*m:]
+        d2 = phase[2*m:]
+        d1 = phase[1*m:]
+        d0 = phase[0:]
+
+        e = min(len(d0), len(d1), len(d2), len(d3))
+        n = e + 1
+
+        v_arr = v + np.cumsum(d3[:e] - 3 * d2[:e] + 3 * d1[:e] - d0[:e])
+
+        s = s + np.sum(v_arr * v_arr)
+        s /= 2.0 * m * m * tau * tau * n
+        s = np.sqrt(s)
+
+
+        md[idx] = s
+        mderr[idx] = (s / np.sqrt(n))
+        ns[idx] = n
+        
+
+    
+    return remove_small_ns(taus_used, md, mderr, ns)
+
+def tdev(data, rate=1.0, data_type="phase", taus=None):
+    (taus_used, md, mde, ns) = mdev(data, rate, data_type,  taus)
+
+    td = taus_used * md / np.sqrt(3.0)
+    tde = td / np.sqrt(ns)
+
+    return taus_used, td, tde, ns
+
+def trim_data(x):
+    """Trim leading and trailing NaNs from dataset
+
+    This is done by browsing the array from each end and store the index of the
+    first non-NaN in each case, the return the appropriate slice of the array
+    """
+    # Find indices for first and last valid data
+    first = 0
+    while np.isnan(x[first]):
+        first += 1
+    last = len(x)
+    while np.isnan(x[last - 1]):
+        last -= 1
+    return x[first:last]
+
+def frequency2phase(freqdata, rate):
+    """ integrate fractional frequency data and output phase data
+
+    Parameters
+    ----------
+    freqdata: np.array
+        Data array of fractional frequency measurements (nondimensional)
+    rate: float
+        The sampling rate for phase or frequency, in Hz
+
+    Returns
+    -------
+    phasedata: np.array
+        Time integral of fractional frequency data, i.e. phase (time) data
+        in units of seconds.
+        For phase in units of radians, see phase2radians()
+    """
+    dt = 1.0 / float(rate)
+    # Protect against NaN values in input array (issue #60)
+    # Reintroduces data trimming as in commit 503cb82
+    freqdata = trim_data(freqdata)
+    # Erik Benkler (PTB): Subtract mean value before cumsum in order to
+    # avoid precision issues when we have small frequency fluctuations on
+    # a large average frequency
+    freqdata = freqdata - np.nanmean(freqdata)
+    phasedata = np.cumsum(freqdata) * dt
+    phasedata = np.insert(phasedata, 0, 0)  # FIXME: why do we do this?
+    # so that phase starts at zero and len(phase)=len(freq)+1 ??
+    return phasedata
+
+def input_to_phase(data, rate, data_type):
+    """ Take either phase or frequency as input and return phase
+    """
+    if data_type == "phase":
+        return data
+    elif data_type == "freq":
+        return frequency2phase(data, rate)
+    else:
+        raise Exception("unknown data_type: " + data_type)
+    
+
+def calc_adev_phase(phase, rate, mj, stride):
+    """  Main algorithm for adev() (stride=mj) and oadev() (stride=1)
+
+    Parameters
+    ----------
+    phase: np.array
+        Phase data in seconds.
+    rate: float
+        The sampling rate for phase or frequency, in Hz
+    mj: int
+        averaging factor, we evaluate at tau = m*tau0
+    stride: int
+        Size of stride
+
+    Returns
+    -------
+    (dev, deverr, n): tuple
+        Array of computed values.
+
+    Notes
+    -----
+    stride = mj for nonoverlapping Allan deviation
+    stride = 1 for overlapping Allan deviation
+
+    * NIST [SP1065]_ eqn (7) and (11) page 16
+    """
+    mj = int(mj)
+    stride = int(stride)
+    d2 = phase[2 * mj::stride]
+    d1 = phase[1 * mj::stride]
+    d0 = phase[::stride]
+
+    n = min(len(d0), len(d1), len(d2))
+
+    if n == 0:
+        RuntimeWarning("Data array length is too small: %i" % len(phase))
+        n = 1
+
+    v_arr = d2[:n] - 2 * d1[:n] + d0[:n]
+    s = np.sum(v_arr * v_arr)
+
+    dev = np.sqrt(s / (2.0*n)) / mj*rate
+    deverr = dev / np.sqrt(n)
+
+    return dev, deverr, n
+
+
+def tau_generator(data, rate, dev, taus=None, v=False, even=False, maximum_m=-1):
+    
+
+    """ pre-processing of the tau-list given by the user (Helper function)
+
+    Does sanity checks, sorts data, removes duplicates and invalid values.
+    Generates a tau-list based on keywords 'all', 'decade', 'octave'.
+    Uses 'octave' by default if no taus= argument is given.
+
+    Parameters
+    ----------
+    data: np.array
+        data array
+    rate: float
+        Sample rate of data in Hz. Time interval between measurements
+        is 1/rate seconds.
+    taus: np.array
+        Array of tau values for which to compute measurement.
+        Alternatively one of the keywords: "all", "octave", "decade".
+        Defaults to "octave" if omitted.
+
+        +----------+--------------------------------+
+        | keyword  |   averaging-factors            |
+        +==========+================================+
+        | "all"    |  1, 2, 3, 4, ..., len(data)    |
+        +----------+--------------------------------+
+        | "octave" |  1, 2, 4, 8, 16, 32, ...       |
+        +----------+--------------------------------+
+        | "decade" |  1, 2, 4, 10, 20, 40, 100, ... |
+        +----------+--------------------------------+
+        | "log10"  |  approx. 10 points per decade  |
+        +----------+--------------------------------+
+    v: bool
+        verbose output if True
+    even: bool
+        require even m, where tau=m*tau0, for Theo1 statistic
+    maximum_m: int
+        limit m, where tau=m*tau0, to this value.
+        used by mtotdev() and htotdev() to limit maximum tau.
+
+    Returns
+    -------
+    (data, m, taus): tuple
+        List of computed values
+    data: np.array
+        Data
+    m: np.array
+        Tau in units of data points
+    taus: np.array
+        Cleaned up list of tau values
+    """
+    # st.write(f"Rate: {rate}")
+    # st.write(f"Data input: {data}")
+    # st.write(f"taus: {taus}")
+
+    if rate == 0:
+        raise RuntimeError("Warning! rate==0")
+
+    if taus is None:  # empty or no tau-list supplied
+        taus = "octave"  # default to octave
+        # st.write("tau input is None")
+    elif isinstance(taus, list) and taus == []:  # empty list
+        taus = "octave"
+
+    # numpy array or non-empty list detected first
+    if isinstance(taus, np.ndarray) or isinstance(taus, list) and len(taus):
+        pass
+    elif taus == "all":  # was 'is'
+        taus = (1.0/rate)*np.linspace(1.0, len(data), len(data))
+    elif taus == "octave":
+        maxn = np.floor(np.log2(len(data)))
+        taus = (1.0/rate)*np.logspace(0, int(maxn), int(maxn+1), base=2.0)
+        # st.write(f"Taus CREATED: {taus}")
+    elif taus == "log10":
+        maxn = np.log10(len(data))
+        taus = (1.0/rate)*np.logspace(0, maxn, int(10*maxn), base=10.0)
+        if v:
+            print("tau_generator: maxn %.1f" % maxn)
+            print("tau_generator: taus=" % taus)
+    elif taus == "decade":  # 1, 2, 4, 10, 20, 40, spacing similar to Stable32
+        maxn = np.floor(np.log10(len(data)))
+        taus = []
+        for k in range(int(maxn+1)):
+            taus.append(1.0*(1.0/rate)*pow(10.0, k))
+            taus.append(2.0*(1.0/rate)*pow(10.0, k))
+            taus.append(4.0*(1.0/rate)*pow(10.0, k))
+
+    data, taus = np.array(data), np.array(taus)
+    rate = float(rate)
+    m = []  # integer averaging factor. tau = m*tau0
+
+    if dev == "adev":
+        stop_ratio = 5
+    elif dev == "mdev":
+        stop_ratio = 4
+    elif dev == "tdev":
+        stop_ratio = 4
+    elif dev == "oadev":
+        stop_ratio = 4
+
+    if maximum_m == -1:  # if no limit given
+        maximum_m = len(data)/stop_ratio
+    # FIXME: should we use a "stop-ratio" like Stable32
+    # found in Table III, page 9 of
+    # "Evolution of frequency stability analysis software"
+    # max(AF) = len(phase)/stop_ratio, where
+    # function  stop_ratio
+    # adev      5
+    # oadev     4
+    # mdev      4
+    # tdev      4
+    # hdev      5
+    # ohdev     4
+    # totdev    2
+    # tierms    4
+    # htotdev   3
+    # mtie      2
+    # theo1     1
+    # theoH     1
+    # mtotdev   2
+    # ttotdev   2
+    
+    # m = np.round(taus * rate)
+    # m = (taus * rate).astype(int)
+    m = np.round(taus * rate).astype(int)
+    # Debug: Check the calculated taus and m
+    # st.write(f"Calculated taus: {taus}")
+    # st.write(f"Calculated m: {m}")
+
+    taus_valid1 = m < len(data)
+    taus_valid2 = m > 0
+    taus_valid3 = m <= maximum_m
+    taus_valid = taus_valid1 & taus_valid2 & taus_valid3
+    m = m[taus_valid]
+    m = m[m != 0]       # m is tau in units of datapoints
+    m = np.unique(m)    # remove duplicates and sort
+
+    if v:
+        print("tau_generator: ", m)
+
+    if len(m) == 0:
+        print("Warning: sanity-check on tau failed!")
+        print("   len(data)=", len(data), " rate=", rate, "taus= ", taus)
+
+    taus2 = m / float(rate)
+
+    if even:  # used by Theo1
+        m_even_mask = ((m % 2) == 0)
+        m = m[m_even_mask]
+        taus2 = taus2[m_even_mask]
+
+    # st.write(f"taus returned: {taus2}")
+    return data, m, taus2
+
+
+def remove_small_ns(taus, devs, deverrs, ns):
+    """ Remove results with small number of samples.
+
+    If n is small (==1), reject the result
+
+    Parameters
+    ----------
+    taus: array
+        List of tau values for which deviation were computed
+    devs: array
+        List of deviations
+    deverrs: array or list of arrays
+        List of estimated errors (possibly a list containing two arrays :
+        upper and lower values)
+    ns: array
+        Number of samples for each point
+
+    Returns
+    -------
+    (taus, devs, deverrs, ns): tuple
+        Identical to input, except that values with low ns have been removed.
+
+    """
+    ns_big_enough = ns > 1
+
+    o_taus = taus[ns_big_enough]
+    o_devs = devs[ns_big_enough]
+    o_ns = ns[ns_big_enough]
+    if isinstance(deverrs, list):
+        assert len(deverrs) < 3
+        o_deverrs = [deverrs[0][ns_big_enough], deverrs[1][ns_big_enough]]
+    else:
+        o_deverrs = deverrs[ns_big_enough]
+    if len(o_devs) == 0:
+        print("remove_small_ns() nothing remains!?")
+        raise UserWarning
+
+    return o_taus, o_devs, o_deverrs, o_ns
+
+
+def adev(data, rate, data_type, taus=None):
+    """ Allan deviation.
+        Classic - use only if required - relatively poor confidence.
+
+    .. math::
+
+        \\sigma^2_{ADEV}(\\tau) = { 1 \\over 2 \\tau^2 }
+        \\langle ( {x}_{n+2} - 2x_{n+1} + x_{n} )^2 \\rangle
+        = { 1 \\over 2 (N-2) \\tau^2 }
+        \\sum_{n=1}^{N-2} ( {x}_{n+2} - 2x_{n+1} + x_{n} )^2
+
+    where :math:`x_n` is the time-series of phase observations, spaced
+    by the measurement interval :math:`\\tau`, and with length :math:`N`.
+
+    Or alternatively calculated from a time-series of fractional frequency:
+
+    .. math::
+
+        \\sigma^{2}_{ADEV}(\\tau) =  { 1 \\over 2 }
+        \\langle ( \\bar{y}_{n+1} - \\bar{y}_n )^2 \\rangle
+
+    where :math:`\\bar{y}_n` is the time-series of fractional frequency
+    at averaging time :math:`\\tau`
+
+
+    Parameters
+    ----------
+    data: np.array
+        Input data. Provide either phase or frequency (fractional,
+        adimensional).
+    rate: float
+        The sampling rate for data, in Hz. Defaults to 1.0
+    data_type: {'phase', 'freq'}
+        Data type, i.e. phase or frequency. Defaults to "phase".
+    taus: np.array
+        Array of tau values, in seconds, for which to compute statistic.
+        Optionally set taus=["all"|"octave"|"decade"] for automatic
+        tau-list generation.
+
+    Returns
+    -------
+    (taus2, ad, ade, ns): tuple
+        Tuple of values
+    taus2: np.array
+        Tau values for which td computed
+    ad: np.array
+        Computed adev for each tau value
+    ade: np.array
+        adev errors
+    ns: np.array
+        Values of N used in each adev calculation
+    """
+    
+    phase = input_to_phase(data, rate, data_type)
+
+    # st.write(f"Taus input:{taus}")
+    # st.write(f"Rate in adev : {rate}")
+    (phase, m, taus_used) = tau_generator(phase, rate, "adev", taus)
+    # st.write(phase)
+    # st.write("Taus")
+    # st.write(taus_used)
+    ad = np.zeros_like(taus_used)
+    ade = np.zeros_like(taus_used)
+    adn = np.zeros_like(taus_used)
+
+    # st.write(f"Taus used: {taus_used}")
+    
+
+    for idx, mj in enumerate(m):  # loop through each tau value m(j)
+        (ad[idx], ade[idx], adn[idx]) = calc_adev_phase(phase, rate, mj, mj)
+
+    return remove_small_ns(taus_used, ad, ade, adn)
+
+
+
+def oadev(data, rate=1.0, data_type="phase", taus=None):
+    """ Overlapping Allan deviation.
+    General purpose - most widely used - first choice.
+
+    .. math::
+
+        \\sigma^2_{OADEV}(m\\tau_0) = { 1 \\over 2 (m \\tau_0 )^2 (N-2m) }
+        \\sum_{n=1}^{N-2m} ( {x}_{n+2m} - 2x_{n+1m} + x_{n} )^2
+
+    where :math:`\\sigma_{OADEV}(m\\tau_0)` is the overlapping Allan
+    deviation at an averaging time of :math:`\\tau=m\\tau_0`, and
+    :math:`x_n` is the time-series of phase observations, spaced by the
+    measurement interval :math:`\\tau_0`, with length :math:`N`.
+
+    Parameters
+    ----------
+    data: np.array
+        Input data. Provide either phase or frequency (fractional,
+        adimensional).
+    rate: float
+        The sampling rate for data, in Hz. Defaults to 1.0
+    data_type: {'phase', 'freq'}
+        Data type, i.e. phase or frequency. Defaults to "phase".
+    taus: np.array
+        Array of tau values, in seconds, for which to compute statistic.
+        Optionally set taus=["all"|"octave"|"decade"] for automatic
+        tau-list generation.
+
+    Returns
+    -------
+    (taus2, ad, ade, ns): tuple
+        Tuple of values
+    taus2: np.array
+        Tau values for which td computed
+    ad: np.array
+        Computed oadev for each tau value
+    ade: np.array
+        oadev errors
+    ns: np.array
+        Values of N used in each oadev calculation
+
+    """
+    phase = input_to_phase(data, rate, data_type)
+    (phase, m, taus_used) = tau_generator(phase, rate, "oadev", taus)
+    
+    ad = np.zeros_like(taus_used)
+    ade = np.zeros_like(taus_used)
+    adn = np.zeros_like(taus_used)
+
+    for idx, mj in enumerate(m):  # stride=1 for overlapping ADEV
+        (ad[idx], ade[idx], adn[idx]) = calc_adev_phase(phase, rate, mj, 1)
+
+    return remove_small_ns(taus_used, ad, ade, adn)
+
+
 
 
 # Main Streamlit app
@@ -769,808 +1604,6 @@ def main():
             # st.session_state['filtered_data'] = df
             st.session_state['is_time_type'] = False
         
-        # Function to parse timestamps
-        def parse_timestamp(timestamp):
-            try:
-                return float(timestamp)
-            except ValueError:
-                pass
-            datetime_formats = ['%Y-%m-%d %H:%M:%S', '%H:%M:%S']
-            for fmt in datetime_formats:
-                try:
-                    dt = datetime.strptime(timestamp, fmt)
-                    if fmt == '%H:%M:%S':
-                        today = datetime.today().date()
-                        return datetime.combine(today, dt.time())
-                    return dt
-                except ValueError:
-                    continue
-            raise ValueError(f"Unsupported timestamp format: {timestamp}")
-
-        # Function to calculate x-intervals
-        def x_interval(data):
-            x = [parse_timestamp(ts) for ts in data['Timestamp']]
-            dx = []
-            for i in range(1, len(x)):
-                try:
-                    if isinstance(x[i], float) and isinstance(x[i-1], float):
-                        diff = x[i] - x[i-1]
-                    elif isinstance(x[i], datetime) and isinstance(x[i-1], datetime):
-                        diff = (x[i] - x[i-1]).total_seconds()
-                    else:
-                        raise TypeError("Mismatch in timestamp types or unsupported type")
-                    
-                    if diff != 0:
-                        dx.append(diff)
-                except TypeError as e:
-                    print(f"TypeError: {e}")
-                    continue  # Skip this interval if there is a type error
-
-            # Ensure that x and dx have the same length
-            x = x[1:len(dx) + 1]
-            st.write(x)
-
-            return x, dx
-
-        # Function to filter data
-        def update_filtered_data(start, end):
-            filtered_data = st.session_state['clk_data_full'][
-                (st.session_state['clk_data_full']["Timestamp"] >= start) &
-                (st.session_state['clk_data_full']["Timestamp"] <= end)
-            ]
-            st.session_state['filtered_data'] = filtered_data
-        
-        
-
-        def create_plots(timestamps, data):
-        # """
-        # This function creates a plotly figure with various subplots for data visualization.
-
-        # Args:
-        #     timestamps: A list or array containing the timestamps for the data.
-        #     data: A list or array containing the data values.
-
-        # Returns:
-        #     A plotly figure object.
-        # """
-
-            fig = make_subplots(
-                rows=2,
-                cols=2,
-                subplot_titles=("", "Histogram", "Sampling Interval", ""),
-                specs=[[{'type': 'scatter'}, {'type': 'histogram'}],
-                        [{'type': 'scatter'}, None]],
-                column_widths=[0.85, 0.15],
-                row_heights=[0.80, 0.20]
-            )
-
-            trace = go.Scatter(x=timestamps, y=data, mode='markers', name='Original')
-            fig.add_trace(trace, row=1, col=1)
-            fig.add_trace(go.Histogram(y=data, nbinsx=50, name='Histogram'), row=1, col=2)
-
-            # Dummy implementation for calculating sampling interval
-            intervals = timestamps.diff().fillna(0)[1:] # Exclude the first interval
-            interval_timestamps = timestamps[1:]  # Exclude the first timestamp to match intervals
-
-            fig.add_trace(
-                go.Scatter(
-                    x=interval_timestamps,
-                    y=intervals,
-                    mode='lines+markers',
-                    name='Sampling Interval',
-                    marker=dict(color='royalblue'),
-                    line=dict(dash='dot')
-                ),
-                row=2, col=1
-            )
-            fig.update_xaxes(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none', row=2, col=1)
-            fig.update_xaxes(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none', row=1, col=1)
-            
-            # Determine y-axis title based on tau0 value
-            tau0 = st.session_state.input_data['tau0']
-            y_axis_title = "Days" if tau0 >= 86400 else "Seconds"
-            fig.update_yaxes(title_text=y_axis_title, row=2, col=1)  # Set y-axis label for the subplot in row 2, col 1
-
-            fig.update_layout(
-                title="Clock Data",
-                xaxis_title="MJD",
-                yaxis_title="Phase data [ns]",
-                yaxis=dict(tickmode='auto', nticks=10),
-                showlegend=False,
-                xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
-                height=600
-
-            )
-
-            return fig
-
-        # Function to remove trend
-        def remove_trend(data, trend_type):
-            x = np.arange(len(data))
-            if trend_type == 'Linear':
-                p = np.polyfit(x, data, 1)
-                trend = np.polyval(p, x)
-                return data - trend, p[0], [p[1]]  # Return residuals and slope and intercept
-            elif trend_type == 'Quadratic':
-                p = np.polyfit(x, data, 2)
-                trend = np.polyval(p, x)
-                return data - trend, None, p  # Return residuals and coefficients
-            else:
-                trend = np.zeros_like(data)
-                return data - trend, None, None  # Return residuals
-                
-        
-        def remove_offset(data):
-            mean_value = np.mean(data)
-            offset_removed_data = data - mean_value
-            return offset_removed_data, mean_value
-        
-        
-        def remove_outliers(data, std_threshold, value_col="Value"):
-            mean = np.mean(data[value_col])
-            std_dev = np.std(data[value_col])
-            filtered_data = data[np.abs(data[value_col] - mean) <= std_threshold * std_dev]
-            return filtered_data, std_dev, np.std(filtered_data[value_col])
-
-
-        # Symmetric Moving average filter for both even and odd window sizes
-        def moving_average(data, window_size):
-            half_window = window_size // 2
-            if window_size % 2 == 0:
-                # Even window size
-                extended_data = np.pad(data, (half_window - 1, half_window), mode='reflect')
-            else:
-                # Odd window size
-                extended_data = np.pad(data, (half_window, half_window), mode='reflect')
-            
-            smoothed_data = np.convolve(extended_data, np.ones(window_size) / window_size, mode='valid')
-            return smoothed_data
-
-        # Calculate moving average
-        def smoothing_overlap(data, window_size, timestamps):
-            smoothed_data = moving_average(data, window_size)
-            half_window = window_size // 2
-            if window_size % 2 == 0:
-                valid_timestamps = timestamps[half_window - 1: -half_window]
-            else:
-                valid_timestamps = timestamps[half_window: -half_window]
-
-            # Ensure lengths are the same
-            valid_timestamps = valid_timestamps[:len(smoothed_data)]
-            smoothed_data = smoothed_data[:len(valid_timestamps)]
-            
-            return valid_timestamps, smoothed_data
-        
-        # Calculate moving average for overlapping case
-        def smoothing_nonoverlap(data, window_size, timestamps):
-            n = len(data)
-            num_segments = n // window_size
-
-            # Only consider full segments
-            data = data[:num_segments * window_size]
-            timestamps = timestamps[:num_segments * window_size]
-
-            # Reshape data to have num_segments rows, each of length window_size
-            reshaped_data = data.reshape(num_segments, window_size)
-            reshaped_timestamps = timestamps.reshape(num_segments, window_size)
-
-            # Compute the mean for each segment
-            smoothed_data = reshaped_data.mean(axis=1)
-            valid_timestamps = reshaped_timestamps.mean(axis=1)
-
-            return valid_timestamps, smoothed_data
-        
-        def read_data(data):
-            return data
-
-        def plot_mdev(data,sampling_int,data_type, label=None, color='orange', marker='o'):
-            # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
-            # tau_values = [2**i for i in range(max_tau_exponent + 1)]
-            max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
-            tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
-            
-            # data_type = "phase"
-            # taus, ad, ade, ns = adev(data, (1/sampling_int), taus=tau_values)
-
-
-            tau_used, md, mderr, ns = mdev(data,(1/sampling_int), data_type, tau_values)
-
-            plt.loglog(tau_used, md, marker=marker, color=color, label=label)
-            plt.xlabel('Tau (s)')
-            plt.ylabel('Modified Allan Deviation')
-            plt.title('Modified Allan Deviation (MDEV)')
-            plt.legend()
-            plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
-            plt.minorticks_on()
-            plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
-            return tau_used, md
-
-        def plot_tdev(data, sampling_int, data_type, label=None, color='blue', marker='*'):
-            # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
-            # tau_values = [2**i for i in range(max_tau_exponent + 1)]
-
-            max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
-            tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
-                        
-            # data_type = "phase"
-            taus, td, tde, ns = tdev(data, (1/sampling_int), data_type,  tau_values)
-
-            plt.loglog(taus, td, marker=marker, color=color, label=label)
-            plt.xlabel('Tau (s)')
-            plt.ylabel('Time Deviation [s]')
-            plt.title('Time Deviation (TDEV)')
-            plt.legend()
-            plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
-            plt.minorticks_on()
-            plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
-            return taus, td
-
-        def plot_oadev(data, sampling_int, data_type, label=None, color='red', marker='^'):
-            # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
-            # tau_values = [2**i for i in range(max_tau_exponent + 1)]
-
-            max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
-            tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
-                        
-            # data_type = "phase"
-
-            taus, ad, ade, ns = oadev(data, (1/sampling_int), data_type, taus=tau_values)
-            plt.loglog(taus, ad, marker=marker, color=color, label=label)
-            plt.xlabel('Tau (s)')
-            plt.ylabel('Overlapping Allan Deviation')
-            plt.title('Overlapping Allan Deviation (OADEV)')
-            plt.legend()
-            plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
-            plt.minorticks_on()
-            plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
-            return taus, ad
-
-        def plot_adev(data, sampling_int, data_type, label=None, color='green', marker='s'):
-            # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
-            # tau_values = [2**i for i in range(max_tau_exponent + 1)]
-            # Calculate the maximum tau exponent so that tau_values remain less than the length of data
-            max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
-            tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
-            
-
-            taus, ad, ade, ns = adev(data, (1/sampling_int), data_type,taus=tau_values)
-            plt.loglog(taus, ad, marker=marker, color=color, label=label)
-            plt.xlabel('Tau (s)')
-            plt.ylabel('Allan Deviation')
-            plt.title('Allan Deviation (ADEV)')
-            plt.legend()
-            plt.grid(True, which='both', linestyle='-', linewidth=0.8, color='gray', alpha=0.5)
-            plt.minorticks_on()
-            plt.grid(which='minor', linestyle=':', linewidth='0.5', color='gray')
-            return taus, ad
-
-        
-        def mdev(data, rate=1.0, data_type="phase", taus=None):
-            """  Modified Allan deviation.
-            Used to distinguish between White and Flicker Phase Modulation.
-
-            .. math::
-
-                \\sigma^2_{MDEV}(m\\tau_0) = { 1 \\over 2 (m \\tau_0 )^2 (N-3m+1) }
-                \\sum_{j=1}^{N-3m+1} \\left[
-                \\sum_{i=j}^{j+m-1} {x}_{i+2m} - 2x_{i+m} + x_{i} \\right]^2
-
-            Parameters
-            ----------
-            data: np.array
-                Input data. Provide either phase or frequency (fractional,
-                adimensional).
-            rate: float
-                The sampling rate for data, in Hz. Defaults to 1.0
-            data_type: {'phase', 'freq'}
-                Data type, i.e. phase or frequency. Defaults to "phase".
-            taus: np.array
-                Array of tau values, in seconds, for which to compute statistic.
-                Optionally set taus=["all"|"octave"|"decade"] for automatic
-                tau-list generation.
-
-            Returns
-            -------
-            (taus2, md, mde, ns): tuple
-                Tuple of values
-            taus2: np.array
-                Tau values for which td computed
-            md: np.array
-                Computed mdev for each tau value
-            mde: np.array
-                mdev errors
-            ns: np.array
-                Values of N used in each mdev calculation
-
-            References
-            ----------
-            * NIST [SP1065]_ eqn (14), page 17.
-            * http://www.leapsecond.com/tools/adev_lib.c
-            """
-            phase = input_to_phase(data, rate, data_type)
-            
-            (phase, ms, taus_used) = tau_generator(phase, rate, "mdev", taus=taus)
-            data, taus = np.array(phase), np.array(taus)
-
-            md = np.zeros_like(ms, dtype=np.float64)
-            mderr = np.zeros_like(ms, dtype=np.float64)
-            ns = np.zeros_like(ms)
-            
-            # this is a 'loop-unrolled' algorithm following
-            # http://www.leapsecond.com/tools/adev_lib.c
-            for idx, m in enumerate(ms):
-                m = int(m)  # without this we get: VisibleDeprecationWarning:
-                # using a non-integer number instead of an integer
-                # will result in an error in the future
-                tau = taus_used[idx]
-
-                # First loop sum
-                d0 = phase[0:m]
-                d1 = phase[m:2*m]
-                d2 = phase[2*m:3*m]
-                e = min(len(d0), len(d1), len(d2))
-                v = np.sum(d2[:e] - 2*d1[:e] + d0[:e])
-                s = v * v
-
-                # Second part of sum
-                d3 = phase[3*m:]
-                d2 = phase[2*m:]
-                d1 = phase[1*m:]
-                d0 = phase[0:]
-
-                e = min(len(d0), len(d1), len(d2), len(d3))
-                n = e + 1
-
-                v_arr = v + np.cumsum(d3[:e] - 3 * d2[:e] + 3 * d1[:e] - d0[:e])
-
-                s = s + np.sum(v_arr * v_arr)
-                s /= 2.0 * m * m * tau * tau * n
-                s = np.sqrt(s)
-
-
-                md[idx] = s
-                mderr[idx] = (s / np.sqrt(n))
-                ns[idx] = n
-             
-
-           
-            return remove_small_ns(taus_used, md, mderr, ns)
-
-        def tdev(data, rate=1.0, data_type="phase", taus=None):
-            (taus_used, md, mde, ns) = mdev(data, rate, data_type,  taus)
-
-            td = taus_used * md / np.sqrt(3.0)
-            tde = td / np.sqrt(ns)
-
-            return taus_used, td, tde, ns
-
-        def trim_data(x):
-            """Trim leading and trailing NaNs from dataset
-
-            This is done by browsing the array from each end and store the index of the
-            first non-NaN in each case, the return the appropriate slice of the array
-            """
-            # Find indices for first and last valid data
-            first = 0
-            while np.isnan(x[first]):
-                first += 1
-            last = len(x)
-            while np.isnan(x[last - 1]):
-                last -= 1
-            return x[first:last]
-
-        def frequency2phase(freqdata, rate):
-            """ integrate fractional frequency data and output phase data
-
-            Parameters
-            ----------
-            freqdata: np.array
-                Data array of fractional frequency measurements (nondimensional)
-            rate: float
-                The sampling rate for phase or frequency, in Hz
-
-            Returns
-            -------
-            phasedata: np.array
-                Time integral of fractional frequency data, i.e. phase (time) data
-                in units of seconds.
-                For phase in units of radians, see phase2radians()
-            """
-            dt = 1.0 / float(rate)
-            # Protect against NaN values in input array (issue #60)
-            # Reintroduces data trimming as in commit 503cb82
-            freqdata = trim_data(freqdata)
-            # Erik Benkler (PTB): Subtract mean value before cumsum in order to
-            # avoid precision issues when we have small frequency fluctuations on
-            # a large average frequency
-            freqdata = freqdata - np.nanmean(freqdata)
-            phasedata = np.cumsum(freqdata) * dt
-            phasedata = np.insert(phasedata, 0, 0)  # FIXME: why do we do this?
-            # so that phase starts at zero and len(phase)=len(freq)+1 ??
-            return phasedata
-
-        def input_to_phase(data, rate, data_type):
-            """ Take either phase or frequency as input and return phase
-            """
-            if data_type == "phase":
-                return data
-            elif data_type == "freq":
-                return frequency2phase(data, rate)
-            else:
-                raise Exception("unknown data_type: " + data_type)
-            
-
-        def calc_adev_phase(phase, rate, mj, stride):
-            """  Main algorithm for adev() (stride=mj) and oadev() (stride=1)
-
-            Parameters
-            ----------
-            phase: np.array
-                Phase data in seconds.
-            rate: float
-                The sampling rate for phase or frequency, in Hz
-            mj: int
-                averaging factor, we evaluate at tau = m*tau0
-            stride: int
-                Size of stride
-
-            Returns
-            -------
-            (dev, deverr, n): tuple
-                Array of computed values.
-
-            Notes
-            -----
-            stride = mj for nonoverlapping Allan deviation
-            stride = 1 for overlapping Allan deviation
-
-            * NIST [SP1065]_ eqn (7) and (11) page 16
-            """
-            mj = int(mj)
-            stride = int(stride)
-            d2 = phase[2 * mj::stride]
-            d1 = phase[1 * mj::stride]
-            d0 = phase[::stride]
-
-            n = min(len(d0), len(d1), len(d2))
-
-            if n == 0:
-                RuntimeWarning("Data array length is too small: %i" % len(phase))
-                n = 1
-
-            v_arr = d2[:n] - 2 * d1[:n] + d0[:n]
-            s = np.sum(v_arr * v_arr)
-
-            dev = np.sqrt(s / (2.0*n)) / mj*rate
-            deverr = dev / np.sqrt(n)
-
-            return dev, deverr, n
-
-
-        def tau_generator(data, rate, dev, taus=None, v=False, even=False, maximum_m=-1):
-            
-
-            """ pre-processing of the tau-list given by the user (Helper function)
-
-            Does sanity checks, sorts data, removes duplicates and invalid values.
-            Generates a tau-list based on keywords 'all', 'decade', 'octave'.
-            Uses 'octave' by default if no taus= argument is given.
-
-            Parameters
-            ----------
-            data: np.array
-                data array
-            rate: float
-                Sample rate of data in Hz. Time interval between measurements
-                is 1/rate seconds.
-            taus: np.array
-                Array of tau values for which to compute measurement.
-                Alternatively one of the keywords: "all", "octave", "decade".
-                Defaults to "octave" if omitted.
-
-                +----------+--------------------------------+
-                | keyword  |   averaging-factors            |
-                +==========+================================+
-                | "all"    |  1, 2, 3, 4, ..., len(data)    |
-                +----------+--------------------------------+
-                | "octave" |  1, 2, 4, 8, 16, 32, ...       |
-                +----------+--------------------------------+
-                | "decade" |  1, 2, 4, 10, 20, 40, 100, ... |
-                +----------+--------------------------------+
-                | "log10"  |  approx. 10 points per decade  |
-                +----------+--------------------------------+
-            v: bool
-                verbose output if True
-            even: bool
-                require even m, where tau=m*tau0, for Theo1 statistic
-            maximum_m: int
-                limit m, where tau=m*tau0, to this value.
-                used by mtotdev() and htotdev() to limit maximum tau.
-
-            Returns
-            -------
-            (data, m, taus): tuple
-                List of computed values
-            data: np.array
-                Data
-            m: np.array
-                Tau in units of data points
-            taus: np.array
-                Cleaned up list of tau values
-            """
-            # st.write(f"Rate: {rate}")
-            # st.write(f"Data input: {data}")
-            # st.write(f"taus: {taus}")
-
-            if rate == 0:
-                raise RuntimeError("Warning! rate==0")
-
-            if taus is None:  # empty or no tau-list supplied
-                taus = "octave"  # default to octave
-                # st.write("tau input is None")
-            elif isinstance(taus, list) and taus == []:  # empty list
-                taus = "octave"
-
-            # numpy array or non-empty list detected first
-            if isinstance(taus, np.ndarray) or isinstance(taus, list) and len(taus):
-                pass
-            elif taus == "all":  # was 'is'
-                taus = (1.0/rate)*np.linspace(1.0, len(data), len(data))
-            elif taus == "octave":
-                maxn = np.floor(np.log2(len(data)))
-                taus = (1.0/rate)*np.logspace(0, int(maxn), int(maxn+1), base=2.0)
-                # st.write(f"Taus CREATED: {taus}")
-            elif taus == "log10":
-                maxn = np.log10(len(data))
-                taus = (1.0/rate)*np.logspace(0, maxn, int(10*maxn), base=10.0)
-                if v:
-                    print("tau_generator: maxn %.1f" % maxn)
-                    print("tau_generator: taus=" % taus)
-            elif taus == "decade":  # 1, 2, 4, 10, 20, 40, spacing similar to Stable32
-                maxn = np.floor(np.log10(len(data)))
-                taus = []
-                for k in range(int(maxn+1)):
-                    taus.append(1.0*(1.0/rate)*pow(10.0, k))
-                    taus.append(2.0*(1.0/rate)*pow(10.0, k))
-                    taus.append(4.0*(1.0/rate)*pow(10.0, k))
-
-            data, taus = np.array(data), np.array(taus)
-            rate = float(rate)
-            m = []  # integer averaging factor. tau = m*tau0
-
-            if dev == "adev":
-                stop_ratio = 5
-            elif dev == "mdev":
-                stop_ratio = 4
-            elif dev == "tdev":
-                stop_ratio = 4
-            elif dev == "oadev":
-                stop_ratio = 4
-
-            if maximum_m == -1:  # if no limit given
-                maximum_m = len(data)/stop_ratio
-            # FIXME: should we use a "stop-ratio" like Stable32
-            # found in Table III, page 9 of
-            # "Evolution of frequency stability analysis software"
-            # max(AF) = len(phase)/stop_ratio, where
-            # function  stop_ratio
-            # adev      5
-            # oadev     4
-            # mdev      4
-            # tdev      4
-            # hdev      5
-            # ohdev     4
-            # totdev    2
-            # tierms    4
-            # htotdev   3
-            # mtie      2
-            # theo1     1
-            # theoH     1
-            # mtotdev   2
-            # ttotdev   2
-            
-            # m = np.round(taus * rate)
-            # m = (taus * rate).astype(int)
-            m = np.round(taus * rate).astype(int)
-            # Debug: Check the calculated taus and m
-            # st.write(f"Calculated taus: {taus}")
-            # st.write(f"Calculated m: {m}")
-
-            taus_valid1 = m < len(data)
-            taus_valid2 = m > 0
-            taus_valid3 = m <= maximum_m
-            taus_valid = taus_valid1 & taus_valid2 & taus_valid3
-            m = m[taus_valid]
-            m = m[m != 0]       # m is tau in units of datapoints
-            m = np.unique(m)    # remove duplicates and sort
-
-            if v:
-                print("tau_generator: ", m)
-
-            if len(m) == 0:
-                print("Warning: sanity-check on tau failed!")
-                print("   len(data)=", len(data), " rate=", rate, "taus= ", taus)
-
-            taus2 = m / float(rate)
-
-            if even:  # used by Theo1
-                m_even_mask = ((m % 2) == 0)
-                m = m[m_even_mask]
-                taus2 = taus2[m_even_mask]
-
-            # st.write(f"taus returned: {taus2}")
-            return data, m, taus2
-
-
-        def remove_small_ns(taus, devs, deverrs, ns):
-            """ Remove results with small number of samples.
-
-            If n is small (==1), reject the result
-
-            Parameters
-            ----------
-            taus: array
-                List of tau values for which deviation were computed
-            devs: array
-                List of deviations
-            deverrs: array or list of arrays
-                List of estimated errors (possibly a list containing two arrays :
-                upper and lower values)
-            ns: array
-                Number of samples for each point
-
-            Returns
-            -------
-            (taus, devs, deverrs, ns): tuple
-                Identical to input, except that values with low ns have been removed.
-
-            """
-            ns_big_enough = ns > 1
-
-            o_taus = taus[ns_big_enough]
-            o_devs = devs[ns_big_enough]
-            o_ns = ns[ns_big_enough]
-            if isinstance(deverrs, list):
-                assert len(deverrs) < 3
-                o_deverrs = [deverrs[0][ns_big_enough], deverrs[1][ns_big_enough]]
-            else:
-                o_deverrs = deverrs[ns_big_enough]
-            if len(o_devs) == 0:
-                print("remove_small_ns() nothing remains!?")
-                raise UserWarning
-
-            return o_taus, o_devs, o_deverrs, o_ns
-
-
-        def adev(data, rate, data_type, taus=None):
-            """ Allan deviation.
-                Classic - use only if required - relatively poor confidence.
-
-            .. math::
-
-                \\sigma^2_{ADEV}(\\tau) = { 1 \\over 2 \\tau^2 }
-                \\langle ( {x}_{n+2} - 2x_{n+1} + x_{n} )^2 \\rangle
-                = { 1 \\over 2 (N-2) \\tau^2 }
-                \\sum_{n=1}^{N-2} ( {x}_{n+2} - 2x_{n+1} + x_{n} )^2
-
-            where :math:`x_n` is the time-series of phase observations, spaced
-            by the measurement interval :math:`\\tau`, and with length :math:`N`.
-
-            Or alternatively calculated from a time-series of fractional frequency:
-
-            .. math::
-
-                \\sigma^{2}_{ADEV}(\\tau) =  { 1 \\over 2 }
-                \\langle ( \\bar{y}_{n+1} - \\bar{y}_n )^2 \\rangle
-
-            where :math:`\\bar{y}_n` is the time-series of fractional frequency
-            at averaging time :math:`\\tau`
-
-
-            Parameters
-            ----------
-            data: np.array
-                Input data. Provide either phase or frequency (fractional,
-                adimensional).
-            rate: float
-                The sampling rate for data, in Hz. Defaults to 1.0
-            data_type: {'phase', 'freq'}
-                Data type, i.e. phase or frequency. Defaults to "phase".
-            taus: np.array
-                Array of tau values, in seconds, for which to compute statistic.
-                Optionally set taus=["all"|"octave"|"decade"] for automatic
-                tau-list generation.
-
-            Returns
-            -------
-            (taus2, ad, ade, ns): tuple
-                Tuple of values
-            taus2: np.array
-                Tau values for which td computed
-            ad: np.array
-                Computed adev for each tau value
-            ade: np.array
-                adev errors
-            ns: np.array
-                Values of N used in each adev calculation
-            """
-            
-            phase = input_to_phase(data, rate, data_type)
-
-            # st.write(f"Taus input:{taus}")
-            # st.write(f"Rate in adev : {rate}")
-            (phase, m, taus_used) = tau_generator(phase, rate, "adev", taus)
-            # st.write(phase)
-            # st.write("Taus")
-            # st.write(taus_used)
-            ad = np.zeros_like(taus_used)
-            ade = np.zeros_like(taus_used)
-            adn = np.zeros_like(taus_used)
-
-            # st.write(f"Taus used: {taus_used}")
-            
-
-            for idx, mj in enumerate(m):  # loop through each tau value m(j)
-                (ad[idx], ade[idx], adn[idx]) = calc_adev_phase(phase, rate, mj, mj)
-
-            return remove_small_ns(taus_used, ad, ade, adn)
-
-
-
-        def oadev(data, rate=1.0, data_type="phase", taus=None):
-            """ Overlapping Allan deviation.
-            General purpose - most widely used - first choice.
-
-            .. math::
-
-                \\sigma^2_{OADEV}(m\\tau_0) = { 1 \\over 2 (m \\tau_0 )^2 (N-2m) }
-                \\sum_{n=1}^{N-2m} ( {x}_{n+2m} - 2x_{n+1m} + x_{n} )^2
-
-            where :math:`\\sigma_{OADEV}(m\\tau_0)` is the overlapping Allan
-            deviation at an averaging time of :math:`\\tau=m\\tau_0`, and
-            :math:`x_n` is the time-series of phase observations, spaced by the
-            measurement interval :math:`\\tau_0`, with length :math:`N`.
-
-            Parameters
-            ----------
-            data: np.array
-                Input data. Provide either phase or frequency (fractional,
-                adimensional).
-            rate: float
-                The sampling rate for data, in Hz. Defaults to 1.0
-            data_type: {'phase', 'freq'}
-                Data type, i.e. phase or frequency. Defaults to "phase".
-            taus: np.array
-                Array of tau values, in seconds, for which to compute statistic.
-                Optionally set taus=["all"|"octave"|"decade"] for automatic
-                tau-list generation.
-
-            Returns
-            -------
-            (taus2, ad, ade, ns): tuple
-                Tuple of values
-            taus2: np.array
-                Tau values for which td computed
-            ad: np.array
-                Computed oadev for each tau value
-            ade: np.array
-                oadev errors
-            ns: np.array
-                Values of N used in each oadev calculation
-
-            """
-            phase = input_to_phase(data, rate, data_type)
-            (phase, m, taus_used) = tau_generator(phase, rate, "oadev", taus)
-            
-            ad = np.zeros_like(taus_used)
-            ade = np.zeros_like(taus_used)
-            adn = np.zeros_like(taus_used)
-
-            for idx, mj in enumerate(m):  # stride=1 for overlapping ADEV
-                (ad[idx], ade[idx], adn[idx]) = calc_adev_phase(phase, rate, mj, 1)
-
-            return remove_small_ns(taus_used, ad, ade, adn)
-
         # Example usage for updating stability results
         if 'out_display' not in st.session_state:
             initialize_state()
@@ -1762,7 +1795,7 @@ def main():
                                 end_range = st.session_state.clock_ranges[clock_name]['end_range']
                                 filtered_data = clk_analysis[(clk_analysis["Timestamp"] >= start_range) & (clk_analysis["Timestamp"] <= end_range)]
                                 combined_data.append((filtered_data, clock_name))
-                                update_action(selected_clock, 'Data Range', f"Start: {start_range}, End: {end_range}")
+                                update_action(clock_name, 'Data Range', f"Start: {start_range}, End: {end_range}")
                             else:
                                 combined_data.append((clk_analysis, clock_name))
 
@@ -1783,7 +1816,7 @@ def main():
 
                     st.plotly_chart(fig, use_container_width=True)
 
-                else:
+                else:  # not the combined clocks 
                     for index, row in st.session_state.df_display.iterrows():
                         if row["Clock Name"] == selected_clock:
                             clock_name = row["Clock Name"]
@@ -1859,7 +1892,7 @@ def main():
                                             # Update session state values if valid range is provided
                                             st.session_state[f"start_float_{clock_name}"] = str(start_range)
                                             st.session_state[f"end_float_{clock_name}"] = str(end_range)
-                                            update_action(selected_clock, 'Data Ranged', f"Start: {start_range}, End: {end_range}")
+                                            update_action(clock_name, 'Data Range', f"Start: {start_range}, End: {end_range}")
 
                                         else:
                                             st.error("End Range must be greater than Start Range")
@@ -1874,7 +1907,7 @@ def main():
                             # Store the processed data for this tab
                             st.session_state.data[clock_name]['data_range'] = st.session_state['filtered_data'].copy()
                             break
-        
+
         if st.session_state.selected == "Detrend":
             selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
             selected_clock_names.append("Combine Clocks")
@@ -1997,6 +2030,7 @@ def main():
                         elif trend == 'Quadratic':
                             equation = f"x(t) = {coeffs[0]:.2e}t^2 + {coeffs[1]:.2e}t + {coeffs[2]:.2e}"
                             st.session_state.trend_coeffs[clock_name] = coeffs
+                        
                         detrend_info.append({
                             "Clock Name": clock_name,
                             "Trend": trend,
@@ -2021,8 +2055,10 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
 
                 st.markdown("### Detrend Information for Each Clock")
-                detrend_df = pd.DataFrame(detrend_info)
-                st.table(detrend_df[['Clock Name', 'Trend', 'Equation']])
+
+                if detrend_info:                
+                    detrend_df = pd.DataFrame(detrend_info)
+                    st.table(detrend_df[['Clock Name', 'Trend', 'Equation']])
 
                 combined_df = pd.DataFrame()
                 for data, name in combined_data:
@@ -2825,10 +2861,20 @@ def main():
             # Ensure all selected clocks are accounted for
             selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
             # selected_clock_names.append("Combine Clocks")
+            # Remove "Combine Clocks" if not required in further processing
+            
+            if "Combine Clocks" in selected_clock_names:
+                selected_clock_names.remove("Combine Clocks")
+            
+            # Update the display with the latest data range
+            for clock_name in selected_clock_names:
+                if clock_name in st.session_state.clock_ranges:
+                    start_range = st.session_state.clock_ranges[clock_name]['start_range']
+                    end_range = st.session_state.clock_ranges[clock_name]['end_range']
+                    update_action(clock_name, 'Data Range', f"Start: {start_range}, End: {end_range}")
 
             # Display the outcome table
-            transform_and_display()
-
+            transform_and_display(selected_clock_names)
 
 
 if __name__ == "__main__":
