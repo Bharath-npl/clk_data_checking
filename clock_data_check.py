@@ -15,7 +15,7 @@ import warnings
 import numpy as np
 import io
 import sys
-sys.path.insert(1, "https://github.com/Bharath-npl/clk_data_checking/blob/main/clock_data_check.py")
+# sys.path.insert(1, "https://github.com/Bharath-npl/clk_data_checking/blob/main/clock_data_check.py")
 from streamlit_option_menu import option_menu
 import datetime
 from io import StringIO
