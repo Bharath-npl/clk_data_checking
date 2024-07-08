@@ -398,6 +398,7 @@ def initialize_out_display():
             "Data Type": pd.Series([], dtype=str),
             "Clock Name": pd.Series([], dtype=str),
             "Data Range": pd.Series([], dtype=str),
+            "Measurement Interval [s]": pd.Series([], dtype=str),
             "Detrend": pd.Series([], dtype=str),
             "Offset Removed": pd.Series([], dtype=str),
             "Outlier Filtered": pd.Series([], dtype=str),
@@ -448,6 +449,7 @@ def update_action(clock_name, action, value):
             "Files uploaded": file_uploaded,
             "Data Type": st.session_state.input_data.get('data_type', 'NA'),
             "Clock Name": clock_name,
+            "Measurement Interval [s]": st.session_state.tau0 , 
             "Data Range": 'NA',
             "Detrend": 'NA',
             "Offset Removed": 'NA',
@@ -465,6 +467,7 @@ def update_action(clock_name, action, value):
 
 
 def update_stability_results(clock_name, analysis_type, tau_values, dev_values):
+    st.write("HELLO WORLD")
     if 'stability_results' not in st.session_state:
         st.session_state.stability_results = {}
     if analysis_type not in st.session_state.stability_results:
@@ -473,6 +476,66 @@ def update_stability_results(clock_name, analysis_type, tau_values, dev_values):
     formatted_results = [f"{int(tau)},{dev:.2e}" for tau, dev in zip(tau_values, dev_values) if not np.isnan(tau) and not np.isnan(dev)]
     st.session_state.stability_results[analysis_type][clock_name] = formatted_results
 
+def render_html_table(df, styles):
+    # Convert the DataFrame to HTML without the index
+    html = df.to_html(escape=False, index=False, classes='dataframe', border=0, header=False)
+
+    # Combine the CSS styles and HTML table
+    full_html = f"<style>{styles}</style>{html}"
+    return full_html
+
+
+def convert_df_to_text(df, delimiter='; '):
+    # Replace <br> tags with the specified delimiter
+    df = df.applymap(lambda x: x.replace('<br>', delimiter) if isinstance(x, str) else x)
+    
+    output = StringIO()
+    df.to_csv(output, sep=' ', index=False, header=False)
+    return output.getvalue()
+
+
+# Define the CSS styles for the table
+styles = """
+.container {
+    width: 100%;
+    overflow-x: auto;
+    max-height: 500px;
+    display: flex;
+    justify-content: center;  /* Center the table horizontally */
+}
+.dataframe {
+    width: 100%;
+    border-collapse: collapse;
+    max-height: 500px;
+    # display: block;
+}
+.dataframe th, .dataframe td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+.dataframe th {
+    background-color: #f2f2f2;
+    font-weight: bold;
+}
+.dataframe tr:nth-child(even) {
+    background-color: #f2f2f2;
+}
+.dataframe tr:nth-child(odd) {
+    background-color: #ffffff;
+}
+.dataframe thead tr {
+    position: sticky;
+    top: 0;
+    background-color: #4CAF50;
+    color: white;
+    z-index: 1;
+}
+.dataframe tbody tr:first-child {
+    background-color: #4CAF50;
+    color: white;
+}
+"""
 
 
 def format_scientific(x):
@@ -529,8 +592,19 @@ def transform_and_display(selected_clock_names):
     # Create a DataFrame from the final rows
     final_df = pd.DataFrame(final_rows)
 
-    # Display the final DataFrame using Streamlit's st.dataframe
-    st.dataframe(final_df, use_container_width=True)
+    html_table = render_html_table(final_df, styles)
+    # st.markdown(html_table, unsafe_allow_html=True)
+    st.markdown(f'<div class="container">{html_table}</div>', unsafe_allow_html=True)
+    st.markdown("")
+     # Convert DataFrame to space-separated text
+    text_data = convert_df_to_text(final_df)
+    st.download_button(
+        label="Download data as text file",
+        data=text_data,
+        file_name='complete_data.txt',
+        mime='text/plain'
+    )
+
 
 # Function to parse timestamps
 def parse_timestamp(timestamp):
@@ -596,6 +670,49 @@ def initialize_clock_ranges():
                 'start_range': clk_analysis["Timestamp"].iloc[0],
                 'end_range': clk_analysis["Timestamp"].max()
             }
+
+def update_range(clock_name, range_type, new_value):
+    """
+    This function updates the horizontal axis range for a specific clock and triggers data filtering and plot updates.
+
+    Args:
+        clock_name (str): Name of the clock to update.
+        range_type (str): "start" or "end" indicating which range to update.
+        new_value (str): The new value entered by the user.
+    """
+    if new_value:
+        try:
+            new_value = float(new_value)
+            # Update session state based on range type
+            if range_type == "start":
+                st.session_state.clock_ranges[clock_name]["start_range"] = new_value
+            elif range_type == "end":
+                st.session_state.clock_ranges[clock_name]["end_range"] = new_value
+            else:
+                st.error(f"Invalid range type: {range_type}" )
+                return  # Exit function if invalid range type
+
+            # Ensure end range is greater than start range
+            if st.session_state.clock_ranges[clock_name]["start_range"] < st.session_state.clock_ranges[clock_name]["end_range"]:
+                # Get filtered data based on updated range
+                clk_analysis = get_latest_data(clock_name, 'data_range')
+                st.session_state['filtered_data'] = clk_analysis[(clk_analysis["Timestamp"] >= st.session_state.clock_ranges[clock_name]["start_range"]) & (clk_analysis["Timestamp"] <= st.session_state.clock_ranges[clock_name]["end_range"])].copy()
+
+                # Update session state with new values
+                st.session_state[f"start_float_{clock_name}"] = str(st.session_state.clock_ranges[clock_name]["start_range"])
+                st.session_state[f"end_float_{clock_name}"] = str(st.session_state.clock_ranges[clock_name]["end_range"])
+
+                # Update plot with filtered data
+                # fig = create_plots(st.session_state['filtered_data']['Timestamp'], st.session_state['filtered_data']['Value'])
+                # st.plotly_chart(fig, use_container_width=True)
+
+                # Update action log (if applicable)
+                update_action(clock_name, 'Data Range', f"Start: {st.session_state.clock_ranges[clock_name]['start_range']}, End: {st.session_state.clock_ranges[clock_name]['end_range']}")
+            else:
+                st.error("End Range must be greater than Start Range")
+        except ValueError as e:
+            st.error(f"Invalid input: {e}")
+
 
 # Function to create and return an empty DataFrame with the same structure
 def create_empty_df():
@@ -1458,21 +1575,22 @@ def oadev(data, rate=1.0, data_type="phase", taus=None):
 
 # Main Streamlit app
 def main():
-    
+
     # # Initialize or reset session state on first load or as needed
     # if 'data_type' not in st.session_state:
     #     initialize_state()
-    
+
     # if 'input_data' not in st.session_state or 'data_type' not in st.session_ state:
     #     initialize_state()  # Ensure everything is initialized
     if 'data_type' not in st.session_state or 'input_data' not in st.session_state:
         initialize_state()
-   
+
+
     # run_once = 0
     # Create a 6-column layout
     container1 = st.container(border=True)
     container1.subheader("Input configuration ")
-    
+
     with container1:
 
         # col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -1485,7 +1603,7 @@ def main():
         col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1.1, 1])  # Each number represents an equal share of the width
 
         # col1, col2, col3, col4, col5, col6 = st.columns(widths)
-         # Data types available for selection
+            # Data types available for selection
         data_types = ['Phase/Time Data', 'Fractional Frequency', 'Frequency Data']
         
         # First column for file upload inside a popover
@@ -1497,7 +1615,7 @@ def main():
                     submitted1 = st.form_submit_button("Submit")
                     if submitted1 and files_uploaded:
                         st.session_state.files_uploaded = files_uploaded
-                       # Extract filenames and store them in a list
+                        # Extract filenames and store them in a list
                         filenames = [file.name for file in files_uploaded]
                         # Append the filenames
                         for filename in filenames:
@@ -1512,10 +1630,10 @@ def main():
             # Popover for Time Data settings
             with st.popover("Input Data settings :alarm_clock:", help="Choose the data you are trying to process"):
                 # st.session_state.data_type = st.radio("Select the type of Data you have:", ['Time Data', 'Frequency Data'])
-    
+
                 # data_type = ['Time Data', 'Frequency Data']
                 # st.session_state.data_type = st.radio("Select the type of Data you have:", data_type, index=0 if st.session_state.data_type not in data_type else data_type.index(st.session_state.data_type))
-               
+                
 
                 st.session_state.data_type = st.radio(
                 "Select the type of Data you have:",
@@ -1567,7 +1685,7 @@ def main():
                     "- '%Y-%m-%d' (Year-month-day only)."
                 )
                 value_help_text = "Data should be numerical or exponential (e.g., 3.14, 2.17e-5)."
-               
+                
                 st.session_state.timestamp_col = st.selectbox("**Select the TIMESTAMP column**", options=[1,'NA', 2, 3, 4, 5, 6, 7, 8, 9, 10], help=timestamp_help_text)
                 st.session_state.data_col = st.selectbox("**Select the DATA column**", options=[2, 3, 1, 4, 5, 6, 7, 8, 9, 10], help=value_help_text)
                 st.session_state.input_data.update({'timestamp_col': st.session_state.timestamp_col})
@@ -1593,7 +1711,7 @@ def main():
                 # st.session_state.clks_data = process_inputs(files_uploaded)#, time_column, frequency_column, type_of_data, st.session_state.order_of_data)
 
 
-   # Second container 
+    # Second container 
     # container2 = st.container(border=True)
     # with container2:
     # col1, sp1, col2, sp2, col3 = st.columns([2,0.1,12,0.1,2])  # Adjust the ratio as needed
@@ -1631,7 +1749,7 @@ def main():
         # # container2.dataframe(data_df, index=False)
         # html = data_df.to_html(index=True)
         # container2.write(html, unsafe_allow_html=True)           
-    
+
     with col2:
         container3 = st.container(border=True)
         # container3.markdown(
@@ -1663,18 +1781,22 @@ def main():
         # Example usage for updating stability results
         if 'out_display' not in st.session_state:
             initialize_state()
-
-        if st.session_state.selected == "Raw Data": # This tab is to show the files and plot the raw data  
         
-       
-            
-            
+        if st.session_state.selected == "Raw Data": # This tab is to show the files and plot the raw data  
+
             # Initialize or adjust session state for checkbox states
             if 'df_display' not in st.session_state:
                 st.session_state.df_display = create_empty_df()
+
+            if 'checkbox_states' not in st.session_state:
+                st.session_state.checkbox_states = [False] * len(st.session_state.df_display)
             
             # Initialize or adjust session state for checkbox states
             num_rows = len(st.session_state.df_display)
+            
+            def handle_checkbox_click(checkbox_value, row_index):
+                # Update the checkbox state in st.session_state.df_display
+                st.session_state.df_display.at[row_index, 'Choose Clock'] = checkbox_value
 
             # Define a function to synchronize checkbox states with df_display
             def sync_checkbox_states():
@@ -1698,7 +1820,7 @@ def main():
                 # "Choose Clock": st.column_config.CheckboxColumn(label = "Select Clock",width= "small")
                 "Choose Clock": st.column_config.CheckboxColumn(label = "Select the Clocks",width= "small")
             }
-           
+            
             if st.session_state.proceed or st.session_state.data_loaded:  # update the app if proceed button is pressed or keep the current status live
                 if st.session_state.files_uploaded:  # check the condition if the user press proceed without uploading the files
                     st.session_state.data_loaded = True
@@ -1740,7 +1862,7 @@ def main():
 
                         st.session_state.df_display = pd.DataFrame({
                             "Files uploaded": files_uploaded,
-                             "Clock Name": clock_names,
+                                "Clock Name": clock_names,
                             "Sample_data": sample_data,
                             "Choose Clock": choose_clock  # Checkbox column data
                         })
@@ -1770,6 +1892,8 @@ def main():
             for i in range(len(st.session_state.df_display)):
                 st.session_state.checkbox_states[i] = st.session_state.df_display.at[i, 'Choose Clock']
 
+            # Update checkbox states based on the edited DataFrame
+            # st.session_state.checkbox_states = st.session_state['df_display']['Choose Clock'].tolist()
             
             if st.button("Process Selected Clocks"):
                 # Extract selected rows based on the 'Choose Clock' column
@@ -1811,7 +1935,7 @@ def main():
                     st.write(f"Selected Clocks for processing: {', '.join(selected_clock_names)}")
                     # st.write(st.session_state.clk_to_analyse)            
                     # st.write(st.session_state.total_data)        
-                   
+                    
                     # Initialize the data frames for all the tabs for the selected clocks
                     for clock_name in selected_clock_names:
                         initialize_clock_data(clock_name)
@@ -1826,160 +1950,169 @@ def main():
                         st.session_state.data[clock_name]['outcome'] = st.session_state.total_data[original_key].copy()
 
         if st.session_state.selected == "Data Range":
-            
-            if 'clk_sel' in st.session_state and st.session_state.clk_sel:
-                selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
-                selected_clock_names.append("Combine Clocks")
+                            
+                if 'clk_sel' in st.session_state and st.session_state.clk_sel:
+                    selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
+                    selected_clock_names.append("Combine Clocks")
 
-                selected_clock = st.radio("**Select Clock for Range Selection**", selected_clock_names, horizontal=True)
+                    selected_clock = st.radio("**Select Clock for Range Selection**", selected_clock_names, horizontal=True)
 
-                if selected_clock == "Combine Clocks":
-                    combined_data = []
-                    for index, row in st.session_state.df_display.iterrows():
-                        if row["Clock Name"] in selected_clock_names[:-1]:
-                            clock_name = row["Clock Name"]
-                            clk_analysis = get_latest_data(clock_name, 'data_range')
-                            if clock_name in st.session_state.clock_ranges:
+                    if selected_clock == "Combine Clocks":
+                        combined_data = []
+                        for index, row in st.session_state.df_display.iterrows():
+                            if row["Clock Name"] in selected_clock_names[:-1]:
+                                clock_name = row["Clock Name"]
+                                clk_analysis = get_latest_data(clock_name, 'data_range')
+                                if clock_name in st.session_state.clock_ranges:
+                                    start_range = st.session_state.clock_ranges[clock_name]['start_range']
+                                    end_range = st.session_state.clock_ranges[clock_name]['end_range']
+                                    filtered_data = clk_analysis[(clk_analysis["Timestamp"] >= start_range) & (clk_analysis["Timestamp"] <= end_range)]
+                                    combined_data.append((filtered_data, clock_name))
+                                    update_action(clock_name, 'Data Range', f"Start: {start_range}, End: {end_range}")
+                                else:
+                                    combined_data.append((clk_analysis, clock_name))
+
+                        fig = go.Figure()
+                        for data, name in combined_data:
+                            fig.add_trace(go.Scatter(x=data["Timestamp"], y=data["Value"], mode='markers', name=name))
+
+                        fig.update_xaxes(tickformat=".2f")
+                        fig.update_layout(
+                            title="Data of Clock",
+                            xaxis_title="MJD",
+                            yaxis_title="Phase data [ns]",
+                            yaxis=dict(tickmode='auto', nticks=10),
+                            showlegend=True,
+                            xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+                            height=600
+                        )
+
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    else:  # not the combined clocks 
+                        for index, row in st.session_state.df_display.iterrows():
+                            if row["Clock Name"] == selected_clock:
+                                clock_name = row["Clock Name"]
+                                clk_analysis = get_latest_data(clock_name, 'data_range')
+                                st.session_state['clk_data_full'] = clk_analysis.copy()
+
+                                if clock_name not in st.session_state.clock_ranges:
+                                    st.session_state.clock_ranges[clock_name] = {
+                                        'start_range': clk_analysis["Timestamp"].iloc[0],
+                                        'end_range': clk_analysis["Timestamp"].max()
+                                    }
+
                                 start_range = st.session_state.clock_ranges[clock_name]['start_range']
                                 end_range = st.session_state.clock_ranges[clock_name]['end_range']
-                                filtered_data = clk_analysis[(clk_analysis["Timestamp"] >= start_range) & (clk_analysis["Timestamp"] <= end_range)]
-                                combined_data.append((filtered_data, clock_name))
-                                update_action(clock_name, 'Data Range', f"Start: {start_range}, End: {end_range}")
-                            else:
-                                combined_data.append((clk_analysis, clock_name))
 
-                    fig = go.Figure()
-                    for data, name in combined_data:
-                        fig.add_trace(go.Scatter(x=data["Timestamp"], y=data["Value"], mode='markers', name=name))
+                                if f"start_float_{clock_name}" not in st.session_state:
+                                    st.session_state[f"start_float_{clock_name}"] = str(start_range)
+                                if f"end_float_{clock_name}" not in st.session_state:
+                                    st.session_state[f"end_float_{clock_name}"] = str(end_range)
 
-                    fig.update_xaxes(tickformat=".2f")
-                    fig.update_layout(
-                        title="Data of Clock",
-                        xaxis_title="MJD",
-                        yaxis_title="Phase data [ns]",
-                        yaxis=dict(tickmode='auto', nticks=10),
-                        showlegend=True,
-                        xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
-                        height=600
-                    )
+                                reset_clicked = st.button("Reset to full Data", key=f"reset_button_{clock_name}")
 
-                    st.plotly_chart(fig, use_container_width=True)
+                                if reset_clicked:
+                                    full_data = st.session_state.data[clock_name]['raw_data']
+                                    st.session_state.clock_ranges[clock_name] = {
+                                        'start_range': full_data["Timestamp"].iloc[0],
+                                        'end_range': full_data["Timestamp"].max()
+                                    }
+                                    start_range = full_data["Timestamp"].iloc[0]
+                                    end_range = full_data["Timestamp"].max()
 
-                else:  # not the combined clocks 
-                    for index, row in st.session_state.df_display.iterrows():
-                        if row["Clock Name"] == selected_clock:
-                            clock_name = row["Clock Name"]
-                            clk_analysis = get_latest_data(clock_name, 'data_range')
-                            st.session_state['clk_data_full'] = clk_analysis.copy()
+                                    # Directly update session state values
+                                    st.session_state[f"start_float_{clock_name}"] = str(start_range)
+                                    st.session_state[f"end_float_{clock_name}"] = str(end_range)
 
-                            if clock_name not in st.session_state.clock_ranges:
-                                st.session_state.clock_ranges[clock_name] = {
-                                    'start_range': clk_analysis["Timestamp"].iloc[0],
-                                    'end_range': clk_analysis["Timestamp"].max()
-                                }
+                                    st.session_state['filtered_data'] = full_data.copy()
+                                    st.session_state.data[clock_name]['data_range'] = full_data.copy()
 
-                            start_range = st.session_state.clock_ranges[clock_name]['start_range']
-                            end_range = st.session_state.clock_ranges[clock_name]['end_range']
+                                    col1, col2, col3, col4, col5 = st.columns(5)
 
-                            if f"start_float_{clock_name}" not in st.session_state:
-                                st.session_state[f"start_float_{clock_name}"] = str(start_range)
-                            if f"end_float_{clock_name}" not in st.session_state:
-                                st.session_state[f"end_float_{clock_name}"] = str(end_range)
+                                    # Use session state values to initialize the input fields
+                                    start_range_input = col1.text_input(
+                                        "Horizontal axis start", value=st.session_state[f"start_float_{clock_name}"], key=f"start_{clock_name}"
+                                    )
+                                    end_range_input = col3.text_input(
+                                        "Horizontal axis end", value=st.session_state[f"end_float_{clock_name}"], key=f"end_{clock_name}"
+                                    )
 
-                            reset_clicked = st.button("Reset to full Data", key=f"reset_button_{clock_name}")
+                                    fig = create_plots(st.session_state['filtered_data']['Timestamp'], st.session_state['filtered_data']['Value'])
+                                    st.plotly_chart(fig, use_container_width=True)
 
-                            if reset_clicked:
-                                full_data = st.session_state.data[clock_name]['raw_data']
-                                st.session_state.clock_ranges[clock_name] = {
-                                    'start_range': full_data["Timestamp"].iloc[0],
-                                    'end_range': full_data["Timestamp"].max()
-                                }
-                                start_range = full_data["Timestamp"].iloc[0]
-                                end_range = full_data["Timestamp"].max()
+                                else: 
+                                    col1, col2, col3, col4, col5 = st.columns(5)
 
-                                # Directly update session state values
-                                st.session_state[f"start_float_{clock_name}"] = str(start_range)
-                                st.session_state[f"end_float_{clock_name}"] = str(end_range)
+                                    # Use session state values to initialize the input fields
+                                    start_range_input = col1.text_input(
+                                        "Horizontal axis start", value=st.session_state[f"start_float_{clock_name}"], key=f"start_{clock_name}", on_change=lambda: update_range(clock_name, "start", st.session_state[f"start_{clock_name}"]))
+                                    
+                                    end_range_input = col3.text_input(
+                                        "Horizontal axis end", value=st.session_state[f"end_float_{clock_name}"], key=f"end_{clock_name}", on_change=lambda: update_range(clock_name, "end", st.session_state[f"end_{clock_name}"]))
+                                    
 
-                                st.session_state['filtered_data'] = full_data.copy()
-                                st.session_state.data[clock_name]['data_range'] = full_data.copy()
+                                    try:
+                                        if start_range_input and end_range_input:
+                                            start_range = float(start_range_input)
+                                            end_range = float(end_range_input)
 
-                                col1, col2, col3, col4, col5 = st.columns(5)
+                                            if start_range < end_range:
+                                                st.session_state.clock_ranges[clock_name]['start_range'] = start_range
+                                                st.session_state.clock_ranges[clock_name]['end_range'] = end_range
+                                                st.session_state['filtered_data'] = clk_analysis[(clk_analysis["Timestamp"] >= start_range) & (clk_analysis["Timestamp"] <= end_range)].copy()
 
-                                # Use session state values to initialize the input fields
-                                start_range_input = col1.text_input(
-                                    "Horizontal axis start", value=st.session_state[f"start_float_{clock_name}"], key=f"start_{clock_name}"
-                                )
-                                end_range_input = col3.text_input(
-                                    "Horizontal axis end", value=st.session_state[f"end_float_{clock_name}"], key=f"end_{clock_name}"
-                                )
+                                                # Update session state values if valid range is provided
+                                                st.session_state[f"start_float_{clock_name}"] = str(start_range)
+                                                st.session_state[f"end_float_{clock_name}"] = str(end_range)
+                                                update_action(clock_name, 'Data Range', f"Start: {start_range}, End: {end_range}")
 
-                                fig = create_plots(st.session_state['filtered_data']['Timestamp'], st.session_state['filtered_data']['Value'])
-                                st.plotly_chart(fig, use_container_width=True)
+                                            else:
+                                                st.error("End Range must be greater than Start Range")
+                                    except ValueError as e:
+                                        st.error(f"Invalid input: {e}")
+                                    except Exception as e:
+                                        st.error(f"An error occurred: {e}")
+                                    
+                                    fig = create_plots(st.session_state['filtered_data']['Timestamp'], st.session_state['filtered_data']['Value'])
+                                    st.plotly_chart(fig, use_container_width=True)
 
-                            else: 
-                                col1, col2, col3, col4, col5 = st.columns(5)
+                                # Store the processed data for this tab
+                                st.session_state.data[clock_name]['data_range'] = st.session_state['filtered_data'].copy()
+                                break
 
-                                # Use session state values to initialize the input fields
-                                start_range_input = col1.text_input(
-                                    "Horizontal axis start", value=st.session_state[f"start_float_{clock_name}"], key=f"start_{clock_name}"
-                                )
-                                end_range_input = col3.text_input(
-                                    "Horizontal axis end", value=st.session_state[f"end_float_{clock_name}"], key=f"end_{clock_name}"
-                                )
-
-                                try:
-                                    if start_range_input and end_range_input:
-                                        start_range = float(start_range_input)
-                                        end_range = float(end_range_input)
-
-                                        if start_range < end_range:
-                                            st.session_state.clock_ranges[clock_name]['start_range'] = start_range
-                                            st.session_state.clock_ranges[clock_name]['end_range'] = end_range
-                                            st.session_state['filtered_data'] = clk_analysis[(clk_analysis["Timestamp"] >= start_range) & (clk_analysis["Timestamp"] <= end_range)].copy()
-
-                                            # Update session state values if valid range is provided
-                                            st.session_state[f"start_float_{clock_name}"] = str(start_range)
-                                            st.session_state[f"end_float_{clock_name}"] = str(end_range)
-                                            update_action(clock_name, 'Data Range', f"Start: {start_range}, End: {end_range}")
-
-                                        else:
-                                            st.error("End Range must be greater than Start Range")
-                                except ValueError as e:
-                                    st.error(f"Invalid input: {e}")
-                                except Exception as e:
-                                    st.error(f"An error occurred: {e}")
-                                
-                                fig = create_plots(st.session_state['filtered_data']['Timestamp'], st.session_state['filtered_data']['Value'])
-                                st.plotly_chart(fig, use_container_width=True)
-
-                            # Store the processed data for this tab
-                            st.session_state.data[clock_name]['data_range'] = st.session_state['filtered_data'].copy()
-                            break
 
         if st.session_state.selected == "Detrend":
             selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
             selected_clock_names.append("Combine Clocks")
-            # initialize_detrend_info()
+
             selected_clock = st.radio("Select Clock for Detrending", selected_clock_names, horizontal=True)
 
             if selected_clock != "Combine Clocks":
                 trend_options = ["None", "Linear", "Quadratic"]
 
-                if 'trend_selection' not in st.session_state:
-                    st.session_state.trend_selection = {}
+                # if 'trend_selection' not in st.session_state:
+                #     st.session_state.trend_selection = {}
+                
+                # Use a temporary variable to store user selection
+                selected_trend = None
 
-                if selected_clock not in st.session_state.trend_selection:
-                    st.session_state.trend_selection[selected_clock] = "None"
+                if selected_clock in st.session_state.trend_selection:
+                    selected_trend = st.session_state.trend_selection[selected_clock]  # Use existing selection if available
 
                 selected_trend = st.radio(
                     "Select trend to plot the residuals",
                     trend_options,
-                    index=trend_options.index(st.session_state.trend_selection[selected_clock]),
+                    key=f"trend_selection_{selected_clock}",  # Unique key based on selected clock
+                    index=trend_options.index(selected_trend) if selected_trend is not None else 0,  # Set default index
                     horizontal=True
                 )
 
-                st.session_state.trend_selection[selected_clock] = selected_trend
+                # Update session state only after confirming selection
+                if selected_trend is not None:
+                    st.session_state.trend_selection[selected_clock] = selected_trend
+                
+                # st.session_state.trend_selection[selected_clock] = selected_trend
 
                 # Process the data for the selected clock
                 for index, row in st.session_state.df_display.iterrows():
@@ -2037,7 +2170,7 @@ def main():
                 st.session_state.data[selected_clock]['smoothing'] = st.session_state['filtered_data'].copy()
                 st.session_state.data[selected_clock]['stability'] = st.session_state['filtered_data'].copy()
                 st.session_state.data[selected_clock]['outcome'] = st.session_state['filtered_data'].copy()
-            
+
             else:  # If combined clock is selected
                 if 'combined_clocks' not in st.session_state.data:
                     st.session_state.data['combined_clocks'] = {'detrend': pd.DataFrame()}
@@ -2049,7 +2182,7 @@ def main():
                     if row["Clock Name"] in selected_clock_names[:-1]:
                         clock_name = row["Clock Name"]
                         clk_analysis = get_latest_data(clock_name, 'detrend')
-                        
+
                         if clock_name in st.session_state.clock_ranges:
                             start_range = st.session_state.clock_ranges[clock_name]['start_range']
                             end_range = st.session_state.clock_ranges[clock_name]['end_range']
@@ -2095,7 +2228,7 @@ def main():
 
                 st.markdown("### Detrend Information for Each Clock")
 
-                if detrend_info:                
+                if detrend_info:
                     detrend_df = pd.DataFrame(detrend_info)
                     st.table(detrend_df[['Clock Name', 'Trend', 'Equation']])
 
@@ -2131,6 +2264,7 @@ def main():
                 selected_offset = st.radio(
                     "Select Offset Option",
                     offset_options,
+                    key=f"offset_selection_{selected_clock}",  # Unique key based on selected clock
                     index=offset_options.index(st.session_state.offset_selection[selected_clock]),
                     horizontal=True
                 )
@@ -2262,6 +2396,7 @@ def main():
                 selected_outlier = st.radio(
                     "Select Outlier Option",
                     outlier_options,
+                    key=f"outlier_selection_{selected_clock}",  # Unique key based on selected clock
                     index=outlier_options.index(st.session_state.outlier_selection[selected_clock]),
                     horizontal=True
                 )
@@ -2355,8 +2490,8 @@ def main():
 
                                 timestamps = filtered_data_updated['Timestamp']
                                 data_to_plot = filtered_data_updated['Value']
-                                fig_updated = create_plots(timestamps, data_to_plot)
-                                st.plotly_chart(fig_updated, use_container_width=True)
+                                # fig_updated = create_plots(timestamps, data_to_plot)
+                                # st.plotly_chart(fig_updated, use_container_width=True)
 
                     update_action(selected_clock, 'Outlier Filtered', f"Method: {selected_outlier}")
 
@@ -2444,13 +2579,20 @@ def main():
             selected_clock_names.append("Combine Clocks")
 
             selected_clock = st.radio("Select Clock for smoothing", selected_clock_names, horizontal=True)
-
+            
             action_details = []
 
             if selected_clock != "Combine Clocks":
                 clock_data = get_latest_data(selected_clock, 'outlier').dropna().copy()
 
-                smoothing_method = st.radio("Select Smoothing Method", ['None', 'Moving Avg (non overlapping)', 'Moving Avg (overlapping)'], index=0, horizontal=True)
+                # smoothing_method = st.radio("Select Smoothing Method", ['None', 'Moving Avg (non overlapping)', 'Moving Avg (overlapping)'], index=0, horizontal=True)
+                smoothing_method = st.radio(
+                    "Select Smoothing Method",
+                    ['None', 'Moving Avg (non overlapping)', 'Moving Avg (overlapping)'],
+                    index=0,
+                    horizontal=True,
+                    key=f"smooth_method_{selected_clock}"  # Unique key based on selected clock
+                )
 
                 if smoothing_method == 'None':
                     timestamps = clock_data['Timestamp']
@@ -2787,7 +2929,7 @@ def main():
 
         if st.session_state.selected == "Out come":
             st.markdown("### Outcome of the Actions")
-
+                
             if 'df_display' in st.session_state:
                 selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
 
@@ -2796,10 +2938,12 @@ def main():
 
                 outcome_data = []
                 for clock_name in selected_clock_names:
+                    # st.write(f"Processing clock: {clock_name}")
                     if clock_name in st.session_state.clock_ranges:
                         start_range = st.session_state.clock_ranges[clock_name]['start_range']
                         end_range = st.session_state.clock_ranges[clock_name]['end_range']
-                        update_action(clock_name, 'Data Range', f"Start: {start_range}, End: {end_range}")
+                        update_action(clock_name, 'Data Range', f"Start: {start_range}<br>End: {end_range}")
+                       
 
                     if clock_name in st.session_state.trend_selection:
                         trend = st.session_state.trend_selection[clock_name]
@@ -2814,8 +2958,9 @@ def main():
                             if coeffs is not None and all(c is not None for c in coeffs):
                                 equation = f"x(t) = {coeffs[0]:.2e}t^2 + {coeffs[1]:.2e}t + {coeffs[2]:.2e}"
 
-                        multiline_value = f"Method: {trend}, Equation: {equation}"
+                        multiline_value = f"Method: {trend}<br>Equation: {equation}"
                         update_action(clock_name, 'Detrend', multiline_value)
+                       
 
                     if clock_name in st.session_state.offset_selection:
                         offset_method = st.session_state.offset_selection[clock_name]
@@ -2824,59 +2969,68 @@ def main():
                             if offset_method == "Remove Offset[Mean Value]":
                                 mean_after = st.session_state.offset_means_after.get(clock_name)
                                 if mean_after is not None:
-                                    offset_info = f"Method: {offset_method}, Mean Before: {mean_before:.2f}, Mean After: {mean_after:.2f}"
+                                    offset_info = f"Method: {offset_method}<br>Mean Before [ns]: {mean_before:.2f}<br>Mean After [ns]: {mean_after:.2f}"
                                 else:
-                                    offset_info = f"Method: {offset_method}, Mean Before: {mean_before:.2f}"
+                                    offset_info = f"Method: {offset_method}<br>Mean Before [ns]: {mean_before:.2f}"
                             else:
-                                offset_info = f"Method: {offset_method}, Mean Before: {mean_before:.2f}"
+                                offset_info = f"Method: {offset_method}<br>Mean Before [ns]: {mean_before:.2f}"
                         else:
-                            offset_info = f"Method: {offset_method}, Mean Before: N/A"
+                            offset_info = f"Method: {offset_method}<br>Mean Before [ns]: N/A"
                         update_action(clock_name, 'Offset Removed', offset_info)
+                                            
 
                     if clock_name in st.session_state.outlier_selection:
                         outlier_method = st.session_state.outlier_selection[clock_name]
                         if outlier_method == "Std_Dev Based":
                             std_threshold = st.session_state.std_threshold[clock_name]
-                            outlier_info = f"Method: {outlier_method}, Multiplier: {std_threshold:.2f}"
+                            outlier_info = f"Method: {outlier_method}<br>Multiplier: {std_threshold:.2f}"
                         else:
                             outlier_info = f"Method: {outlier_method}"
                         update_action(clock_name, 'Outlier Filtered', outlier_info)
+                        
 
                     if clock_name in st.session_state.smoothing_method:
                         smoothing_method = st.session_state.smoothing_method[clock_name]
                         window_size = st.session_state.window_size[clock_name]
-                        smoothing_info = f"Method: {smoothing_method}, Window Size: {window_size}"
+                        smoothing_info = f"Method: {smoothing_method}<br>Window Size: {window_size}"
                         update_action(clock_name, 'Smoothed', smoothing_info)
+                        
+                    
+                    # st.write(f"stability results: {st.session_state.stability_results}")
 
-                    if clock_name in st.session_state.stability_results:
-                        for analysis_type, results in st.session_state.stability_results[clock_name].items():
+                    # Check if stability results exist for the clock under each analysis type
+                    for analysis_type in st.session_state.stability_results:
+                        if clock_name in st.session_state.stability_results[analysis_type]:
+                            # st.write(f"{clock_name} stability results available for {analysis_type}:",
+                                    # st.session_state.stability_results[analysis_type][clock_name])
+                            results = st.session_state.stability_results[analysis_type][clock_name]
                             for result in results:
                                 tau, stability = result.split(',')
+                                # st.write(f"Appending result for {clock_name} - {analysis_type}: {tau}, {stability}")
                                 outcome_data.append([clock_name, analysis_type, int(tau), float(stability)])
+                        # else:
+                            # st.write(f"No stability results for {clock_name} under {analysis_type}")
 
-                if outcome_data:
-                    outcome_df = pd.DataFrame(outcome_data, columns=['Clock Name', 'Analysis Type', 'Tau (s)', 'Stability'])
-                    outcome_df['Stability'] = outcome_df['Stability'].apply(lambda x: f"{x:.2e}")
+                # st.write(f"Outcome data: {outcome_data}")
 
-                    # Apply custom CSS for sticky header
-                    st.markdown(
-                        """
-                        <style>
-                        .stDataFrame thead tr th {
-                            position: sticky;
-                            top: 0;
-                            background: white;
-                            z-index: 1;
-                        }
-                        </style>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                # if outcome_data:
+                #     outcome_df = pd.DataFrame(outcome_data, columns=['Clock Name', 'Analysis Type', 'Tau (s)', 'Stability'])
+                #     outcome_df['Stability'] = outcome_df['Stability'].apply(lambda x: f"{x:.2e}")
 
-                    st.dataframe(outcome_df, use_container_width=True)
+                #     # Add download button
+                #     text_data = convert_df_to_text(outcome_df)
+                #     # st.download_button(
+                #     #     label="Download data as text file",
+                #     #     data=text_data,
+                #     #     file_name='outcome_data.txt',
+                #     #     mime='text/plain'
+                #     # )
+                # # else:
+                #     st.write("No outcome data available.")
 
                 transform_and_display(selected_clock_names)
 
 if __name__ == "__main__":
     run_once = 0
     main()
+ 
