@@ -1809,6 +1809,9 @@ def main():
                     elif len(st.session_state.checkbox_states) > num_rows:
                         st.session_state.checkbox_states = st.session_state.checkbox_states[:num_rows]
 
+            def generate_unique_key(index):
+                return f"checkbox_{index}"
+
             # Synchronize checkbox states initially
             sync_checkbox_states()
 
@@ -1862,7 +1865,7 @@ def main():
 
                         st.session_state.df_display = pd.DataFrame({
                             "Files uploaded": files_uploaded,
-                                "Clock Name": clock_names,
+                            "Clock Name": clock_names,
                             "Sample_data": sample_data,
                             "Choose Clock": choose_clock  # Checkbox column data
                         })
@@ -1873,12 +1876,16 @@ def main():
                 else:
                     st.error("Please upload the files")
 
-            # Ensure df_display is synchronized with checkbox states
-            for i in range(len(st.session_state.df_display)):
-                st.session_state.df_display.at[i, 'Choose Clock'] = st.session_state.checkbox_states[i]
+            # Generate unique keys for each checkbox and store them separately
+            if 'checkbox_keys' not in st.session_state:
+                st.session_state.checkbox_keys = [generate_unique_key(i) for i in range(len(st.session_state.df_display))]
+
+            # Ensure the length of checkbox_keys matches the number of rows
+            if len(st.session_state.checkbox_keys) < len(st.session_state.df_display):
+                st.session_state.checkbox_keys.extend(generate_unique_key(i) for i in range(len(st.session_state.checkbox_keys), len(st.session_state.df_display)))
 
             # Update the data editor display with the new data
-            st.session_state['df_display'] = st.data_editor(
+            edited_df = st.data_editor(
                 st.session_state.df_display,
                 column_config=column_config,
                 height=300,
@@ -1886,15 +1893,14 @@ def main():
                 hide_index=True,
                 num_rows="fixed",
                 disabled=["Files uploaded", "Sample_data"]
-            )
+                )
 
             # Update checkbox states based on the user interactions within st.data_editor
-            for i in range(len(st.session_state.df_display)):
-                st.session_state.checkbox_states[i] = st.session_state.df_display.at[i, 'Choose Clock']
+            for i in range(len(edited_df)):
+                st.session_state.checkbox_states[i] = edited_df.at[i, 'Choose Clock']
 
-            # Update checkbox states based on the edited DataFrame
-            # st.session_state.checkbox_states = st.session_state['df_display']['Choose Clock'].tolist()
-            
+            st.session_state.df_display = edited_df
+           
             if st.button("Process Selected Clocks"):
                 # Extract selected rows based on the 'Choose Clock' column
                 selected_data = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]
