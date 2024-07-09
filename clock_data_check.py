@@ -2772,10 +2772,6 @@ def main():
         if st.session_state.selected == "Stability": 
             selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
 
-            # st.markdown("### Stability Analysis [Courtesy: Allan Tools]")
-            # Center-align the markdown content using HTML
-            # st.markdown("<h3 style='text-align: center;'>Stability Analysis [Courtesy: Allan Tools]</h3>", unsafe_allow_html=True)
-            
             st.markdown("""
                 <div style='text-align: center;'>
                     <h3>Stability Analysis</h3>
@@ -2785,14 +2781,24 @@ def main():
             
             col1, col2 = st.columns(2)
 
+             # Default selections if not set in session state
+            if 'analysis_selection' not in st.session_state:
+                st.session_state.analysis_selection = ["ADEV"]
+            if 'selected_clocks' not in st.session_state:
+                st.session_state.selected_clocks = [selected_clock_names[0]] if selected_clock_names else []
+
             with col1:
                 # st.markdown("#### Select Stability Analysis Type")
                 analysis_types = ["ADEV", "MDEV", "OADEV", "TDEV"]
-                analysis_selection = st.multiselect("Choose analysis types:", analysis_types, default=["ADEV"])
+                analysis_selection = st.multiselect("Choose analysis types:", analysis_types, default=st.session_state.analysis_selection)
+                # Store the selection in session state
+                st.session_state.analysis_selection = analysis_selection
 
             with col2:
                 # st.markdown("#### Select Clocks:")
-                selected_clocks = st.multiselect("Choose clocks:", selected_clock_names, default=[selected_clock_names[0]])
+                selected_clocks = st.multiselect("Choose clocks:", selected_clock_names, default=st.session_state.selected_clocks)
+                # Store the selection in session state
+                st.session_state.selected_clocks = selected_clocks
 
             plot_data = {}
             csv_data_dict = {}
