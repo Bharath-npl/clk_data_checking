@@ -467,7 +467,7 @@ def update_action(clock_name, action, value):
 
 
 def update_stability_results(clock_name, analysis_type, tau_values, dev_values):
-    st.write("HELLO WORLD")
+    
     if 'stability_results' not in st.session_state:
         st.session_state.stability_results = {}
     if analysis_type not in st.session_state.stability_results:
