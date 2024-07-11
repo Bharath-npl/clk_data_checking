@@ -1701,11 +1701,8 @@ def main():
                 timestamp_help_text = (
                     "If your data does not have a timestamp column, choose 'NA'. "
                     "Acceptable Timestamp formats include: "
-                    "- MJD (e.g., 56032, 56032.1234); "
-                    "- '%Y-%m-%d %H:%M:%S' (Year-month-day Hour:Minute:Second); "
-                    "- '%H:%M:%S' (Hour:Minute:Second only); "
-                    "- '%Y-%m-%d' (Year-month-day only)."
-                )
+                    "- MJD (e.g., 56032, 56032.1234); ")
+                
                 value_help_text = "Data should be numerical or exponential (e.g., 3.14, 2.17e-5)."
                 
                 st.session_state.timestamp_col = st.selectbox("**Select the TIMESTAMP column**", options=[1,'NA', 2, 3, 4, 5, 6, 7, 8, 9, 10], help=timestamp_help_text)
