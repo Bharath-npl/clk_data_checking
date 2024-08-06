@@ -155,13 +155,25 @@ def convert_to_nanoseconds(value, unit, signal_freq_MHz):
     # Handle direct time unit conversions when no signal frequency is specified
     else:
         if unit == 'ns':
-            return value  # No conversion needed for nanoseconds
-        elif unit == 'microseconds':
-            return value * 1_000  # Convert microseconds to nanoseconds
+            st.session_state.y_title = "Phase Data [ns]"
+            st.session_state.unitmulty = 1E+9
+            return value * 1_000_000_000  # No conversion needed for nanoseconds
+            
+        elif unit == 'µs':
+            st.session_state.y_title = "Phase Data [µs]"
+            st.session_state.unitmulty = 1E+6
+            return value * 1_000_000  # Convert microseconds to nanoseconds
+        
         elif unit == 'ms':
-            return value * 1_000_000  # Convert milliseconds to nanoseconds
+            st.session_state.y_title = "Phase Data [ms]"
+            st.session_state.unitmulty = 1E+3
+            return value * 1_000  # Convert milliseconds to nanoseconds
+        
         elif unit == 's':
-            return value * 1_000_000_000  # Convert seconds to nanoseconds
+            st.session_state.y_title = "Phase Data [s]"
+            st.session_state.unitmulty = 1
+            return value  # Convert seconds to nanoseconds
+        
         else:
             return None  # Unknown time unit
 
@@ -544,6 +556,15 @@ def format_scientific(x):
     except (ValueError, TypeError):
         return x
 
+def format_scientific2(value):
+    # return f"{value:.2e}" if isinstance(value, (float, int)) else value
+    try:
+        return f"{value * st.session_state.unitmulty:.2e}" if isinstance(value, (float, int)) else value
+    except Exception as e:
+        st.write(f"Error formatting value {value}: {e}")
+        return value
+    
+
 def transform_and_display(selected_clock_names):
     if 'out_display' not in st.session_state:
         return
@@ -885,8 +906,8 @@ def create_plots(timestamps, data):
         row=2, col=1
     )
 
-    fig.update_xaxes(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none', row=2, col=1)
-    fig.update_xaxes(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none', row=1, col=1)
+    fig.update_xaxes(tickformat=".1f", tickfont=dict(size=14, color="black"), exponentformat='none', row=2, col=1)
+    fig.update_xaxes(tickformat=".1f", tickfont=dict(size=14, color="black"), exponentformat='none', row=1, col=1)
 
     # Determine y-axis title based on tau0 value
     tau0 = st.session_state.input_data['tau0']
@@ -896,10 +917,10 @@ def create_plots(timestamps, data):
     fig.update_layout(
         title="Clock Data",
         xaxis_title="MJD",
-        yaxis_title="Phase data [ns]",
+        yaxis_title=st.session_state.y_title,
         yaxis=dict(tickmode='auto', nticks=10),
         showlegend=False,
-        xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+        xaxis=dict(tickformat=".1f", tickfont=dict(size=14, color="black"), exponentformat='none'),
         height=600
     )
 
@@ -988,7 +1009,7 @@ def plot_mdev(data,sampling_int,data_type, label=None, color='orange', marker='o
     # max_tau_exponent = int(np.floor(np.log2(len(data)))) - 2
     # tau_values = [2**i for i in range(max_tau_exponent + 1)]
     max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
-    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < (len(data)*sampling_int)]
     
     # data_type = "phase"
     # taus, ad, ade, ns = adev(data, (1/sampling_int), taus=tau_values)
@@ -1011,7 +1032,7 @@ def plot_tdev(data, sampling_int, data_type, label=None, color='blue', marker='*
     # tau_values = [2**i for i in range(max_tau_exponent + 1)]
 
     max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
-    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < (len(data)*sampling_int)]
                 
     # data_type = "phase"
     taus, td, tde, ns = tdev(data, (1/sampling_int), data_type,  tau_values)
@@ -1031,7 +1052,7 @@ def plot_oadev(data, sampling_int, data_type, label=None, color='red', marker='^
     # tau_values = [2**i for i in range(max_tau_exponent + 1)]
 
     max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
-    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < (len(data)*sampling_int)]
                 
     # data_type = "phase"
 
@@ -1051,7 +1072,7 @@ def plot_adev(data, sampling_int, data_type, label=None, color='green', marker='
     # tau_values = [2**i for i in range(max_tau_exponent + 1)]
     # Calculate the maximum tau exponent so that tau_values remain less than the length of data
     max_tau_exponent = int(np.floor(np.log2(len(data) * sampling_int))) - 2
-    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < len(data)]
+    tau_values = [2**i * sampling_int for i in range(max_tau_exponent + 1) if 2**i * sampling_int < (len(data)*sampling_int)]
     
 
     taus, ad, ade, ns = adev(data, (1/sampling_int), data_type,taus=tau_values)
@@ -1791,6 +1812,12 @@ def main():
         if 'out_display' not in st.session_state:
             initialize_state()
         
+        if 'unitmulty' not in st.session_state:
+            st.session_state.unitmulty = 1
+
+        if 'y_title' not in st.session_state:
+            st.session_state.y_title = "Phase Data [s]"
+        
         if st.session_state.selected == "Raw Data" : # This tab is to show the files and plot the raw data  
 
             # Initialize or adjust session state for checkbox states
@@ -2012,10 +2039,10 @@ def main():
                     fig.update_layout(
                         title="Data of Clock",
                         xaxis_title="MJD",
-                        yaxis_title="Phase data [ns]",
+                        yaxis_title=st.session_state.y_title,
                         yaxis=dict(tickmode='auto', nticks=10),
                         showlegend=True,
-                        xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+                        xaxis=dict(tickformat=".1f", tickfont=dict(size=14, color="black"), exponentformat='none'),
                         height=600
                     )
 
@@ -2035,7 +2062,12 @@ def main():
                     csv_header += "# Data\n"
 
                     # Convert DataFrame to CSV format
-                    combined_df = combined_df.round(2)
+                    # Convert the columns data to proper scientific format 
+                    value_columns = [col for col in combined_df.columns if 'Range_Selected' in col]
+                    
+                    # Apply the formatting function only to the "Value" columns
+                    combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
+
                     csv_data = csv_header + combined_df.to_csv(index=False, lineterminator='\n')
 
                     # Add download button
@@ -2247,7 +2279,7 @@ def main():
 
                     combined_data = []
                     detrend_info = []
-
+                    
                     for index, row in st.session_state.df_display.iterrows():
                         if row["Clock Name"] in selected_clock_names[:-1]:
                             clock_name = row["Clock Name"]
@@ -2283,14 +2315,14 @@ def main():
                     for data, name in combined_data:
                         fig.add_trace(go.Scatter(x=data["Timestamp"], y=data["Detrended_Value"], mode='markers', name=name))
 
-                    fig.update_xaxes(tickformat=".3f")
+                    fig.update_xaxes(tickformat=".1f")
                     fig.update_layout(
                         title="Detrended Data of Clocks",
                         xaxis_title="MJD",
-                        yaxis_title="Detrended Phase data [ns]",
+                        yaxis_title=st.session_state.y_title,
                         yaxis=dict(tickmode='auto', nticks=10),
                         showlegend=True,
-                        xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+                        xaxis=dict(tickformat=".1f", tickfont=dict(size=14, color="black"), exponentformat='none'),
                         height=600
                     )
 
@@ -2303,18 +2335,47 @@ def main():
                         st.table(detrend_df[['Clock Name', 'Trend', 'Equation']])
 
                     combined_df = pd.DataFrame()
+                    combined_info = []  # List to store combined info for header
+
                     for data, name in combined_data:
                         temp_df = data[['Timestamp', 'Detrended_Value']].copy()
                         temp_df.columns = [f'Timestamp_{name}', f'Detrended_Value_{name}']
                         combined_df = pd.concat([combined_df, temp_df], axis=1)
 
+                        # Collecting combined info for header
+                        start_range = st.session_state.clock_ranges.get(name, {}).get('start_range', 'N/A')
+                        end_range = st.session_state.clock_ranges.get(name, {}).get('end_range', 'N/A')
+                        combined_info.append({
+                            "clock_name": name,
+                            "start_range": start_range,
+                            "end_range": end_range
+                        })
+
                     st.session_state.data['combined_clocks']['detrend'] = combined_df.copy()  # Store combined detrended data
 
-                    combined_df = combined_df.round(2)
-                    csv = combined_df.to_csv(index=False)
+                    # Create CSV header with clock info and detrend information
+                    csv_header = "# Combined Clock Data\n"
+                    for info in combined_info:
+                        csv_header += f"# Clock Name: {info['clock_name']}, Start Range: {info['start_range']}, End Range: {info['end_range']}\n"
+                    if detrend_info:
+                        for detrend in detrend_info:
+                            csv_header += f"# Clock Name: {detrend['Clock Name']}, Trend: {detrend['Trend']}, Equation: {detrend['Equation']}\n"
+                    csv_header += "# Data\n"
+                    
+                    
+                    # Convert DataFrame to CSV format
+                    # Convert the columns data to proper scientific format 
+                    value_columns = [col for col in combined_df.columns if 'Detrended_Value' in col]
+                    
+                    # Apply the formatting function only to the "Value" columns
+                    combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
+
+                    # combined_df = combined_df.round(2)
+                    csv_data_detrend = csv_header + combined_df.to_csv(index=False, lineterminator='\n')
+
                     st.download_button(
                         label="Download Combined Data as CSV",
-                        data=csv,
+                        data=csv_data_detrend,
                         file_name='combined_detrended_data.csv',
                         mime='text/csv',
                     )
@@ -2366,10 +2427,10 @@ def main():
                     fig = create_plots(timestamps, data_to_plot)
                     st.plotly_chart(fig, use_container_width=True)
 
-                    st.markdown(f"**Mean Value (Before Removal):** {mean_before_removal:.2f} [ns]")
+                    st.markdown(f"**Mean Value (Before Removal):** {mean_before_removal:.2e} [{st.session_state.order_of_data}]")
                     if selected_offset == "Remove Offset[Mean Value]":
-                        st.markdown(f"**Mean Value (After Removal):** {mean_after_removal:.2f} [ns]")
-                        update_action(selected_clock, 'Offset Removed', f"Method: {selected_offset}, Mean Before: {mean_before_removal:.2f}, Mean After: {mean_after_removal:.2f}")
+                        st.markdown(f"**Mean Value (After Removal):** {mean_after_removal:.2e} [{st.session_state.order_of_data}]")
+                        update_action(selected_clock, 'Offset Removed', f"Method: {selected_offset}, Mean Before: {mean_before_removal:.2e}, Mean After: {mean_after_removal:.2e}")
 
                     st.session_state.data[selected_clock]['offset'] = clock_data.copy()
                     st.session_state.data[selected_clock]['outlier'] = clock_data.copy()
@@ -2403,22 +2464,22 @@ def main():
                             combined_info.append({
                                 "Clock Name": clock_name,
                                 "Offset Option": offset_option,
-                                "Mean Value (Before Removal)": f"{mean_before_removal:.2f} [ns]",
-                                "Mean Value (After Removal)": f"{mean_after_removal:.2f} [ns]" if offset_option == "Remove Offset[Mean Value]" else ""
+                                "Mean Value (Before Removal)": f"{mean_before_removal:.2e} [{st.session_state.order_of_data}]",
+                                "Mean Value (After Removal)": f"{mean_after_removal:.2e} [{st.session_state.order_of_data}]" if offset_option == "Remove Offset[Mean Value]" else ""
                             })
 
                     fig = go.Figure()
                     for data, name in combined_data:
                         fig.add_trace(go.Scatter(x=data["Timestamp"], y=data["Offset_Removed_Value"], mode='markers', name=name))
 
-                    fig.update_xaxes(tickformat=".3f")
+                    fig.update_xaxes(tickformat=".1f")
                     fig.update_layout(
                         title="Offset Removed Data of Clocks",
                         xaxis_title="MJD",
-                        yaxis_title="Offset Removed Phase data [ns]",
+                        yaxis_title= st.session_state.y_title,
                         yaxis=dict(tickmode='auto', nticks=10),
                         showlegend=True,
-                        xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+                        xaxis=dict(tickformat=".1f", tickfont=dict(size=14, color="black"), exponentformat='none'),
                         height=600
                     )
 
@@ -2438,7 +2499,7 @@ def main():
                         st.session_state.data['combined_clocks'] = {}
                     st.session_state.data['combined_clocks']['offset'] = combined_data_df.copy()
 
-                    combined_data_df = combined_data_df.round(2)
+                    
                     csv_header = "# Combined Clock Data\n"
                     for info in combined_info:
                         csv_header += f"# Clock Name: {info['Clock Name']}, Offset Option: {info['Offset Option']}, Mean Value (Before Removal): {info['Mean Value (Before Removal)']}"
@@ -2447,6 +2508,13 @@ def main():
                         else:
                             csv_header += "\n"
                     csv_header += "# Data\n"
+
+                    # Convert the columns datra to proper scientific format 
+                    value_columns = [col for col in combined_data_df.columns if 'Offset_Removed_Value' in col]
+                    
+                    # Apply the formatting function only to the "Value" columns
+                    combined_data_df[value_columns] = combined_data_df[value_columns].applymap(format_scientific2)
+
                     csv = csv_header + combined_data_df.to_csv(index=False)
                     st.download_button(label="Download Combined Data as CSV", data=csv, file_name='combined_offset_removed_data.csv', mime='text/csv')
 
@@ -2511,13 +2579,15 @@ def main():
                                 max_value=100.0,
                                 value=float(st.session_state.get(f"std_threshold_{selected_clock}", 50.0)),
                                 step=0.1,
+                                format="%0.1f",
                                 key=f"std_threshold_input_{selected_clock}_{st.session_state.get(f'std_threshold_{selected_clock}')}",
                                 help="Minimum threshold limit is 0.1 time of Std Dev and Max threshold limit is 100.0 times of Std Dev in steps of 0.1"
                             )
 
                         if reset_button_std:
                             std_threshold = 50.0  # Reset to default
-                            st.session_state[f'std_threshold_{selected_clock}'] = std_threshold
+                            st.session_state[f"std_threshold_{selected_clock}"] = 50.0 # Reset to default
+                            # st.session_state[f'std_threshold_{selected_clock}'] = std_threshold
                             filtered_data, std_dev, new_std_dev = remove_outliers(initial_data, std_threshold, 'Value')
                             st.session_state[f'outlier_data_{selected_clock}'] = filtered_data
                         else:
@@ -2529,10 +2599,10 @@ def main():
                         fig_filtered = create_plots(timestamps, data_to_plot)
                         st.plotly_chart(fig_filtered, use_container_width=True)
 
-                        st.markdown(f"**Standard Deviation for {selected_clock}:** {std_dev:.2f} [ns]")
-                        st.markdown(f"**Max Value:** {np.nanmax(filtered_data['Value']):.2f} [ns]")
-                        st.markdown(f"**Min Value:** {np.nanmin(filtered_data['Value']):.2f} [ns]")
-                        st.markdown(f"**New Standard Deviation (After Removal):** {new_std_dev:.2f} [ns]")
+                        st.markdown(f"**Standard Deviation for {selected_clock}:** {std_dev:.2e} [ns]")
+                        st.markdown(f"**Max Value:** {np.nanmax(filtered_data['Value']):.2e} [ns]")
+                        st.markdown(f"**Min Value:** {np.nanmin(filtered_data['Value']):.2e} [ns]")
+                        st.markdown(f"**New Standard Deviation (After Removal):** {new_std_dev:.2e} [ns]")
 
                         st.session_state.std_threshold[selected_clock] = std_threshold
                         update_action(selected_clock, 'Outlier Filtered', f"Method: {selected_outlier}, Std Dev: {std_threshold}")
@@ -2555,19 +2625,22 @@ def main():
                             event_data = st.plotly_chart(fig, key=f"outlier_{selected_clock}", on_select="rerun", selection_mode=('points', 'box', 'lasso'),theme="streamlit")
                             # st.plotly_chart(fig, use_container_width=True)
                         else:
+                            # filtered_data_updated = clock_data.copy()
+                            # timestamps = filtered_data_updated['Timestamp']
+                            # data_to_plot = filtered_data_updated['Value']
                             fig_selection = create_plots(timestamps, data_to_plot)
                             event_data = st.plotly_chart(fig_selection, key=f"outlier_{selected_clock}", on_select="rerun", selection_mode=('points', 'box', 'lasso'),theme="streamlit")
 
                             if event_data and event_data.selection:
-                                selected_points = event_data.selection["points"]
+                                selected_points = event_data.selection.get("points", [])
 
                                 if selected_points:
-                                    selected_points_set = set(point["point_index"] for point in selected_points if "point_index" in point)
+                                    selected_points_indices = [point["point_index"] for point in selected_points if "point_index" in point]
 
                                     filtered_data_updated = filtered_data.copy()
-                                    removed_outliers = filtered_data.loc[filtered_data.index.isin(selected_points_set), 'Value'].tolist()
-                                    filtered_data_updated.loc[filtered_data_updated.index.isin(selected_points_set), 'Value'] = np.nan
-                                    st.session_state[f'outlier_data_{selected_clock}'] = filtered_data_updated                               
+                                    removed_outliers = filtered_data.loc[filtered_data.index.isin(selected_points_indices), 'Value'].tolist()
+                                    filtered_data_updated = filtered_data_updated.drop(index=filtered_data_updated.index[selected_points_indices])
+                                    st.session_state[f'outlier_data_{selected_clock}'] = filtered_data_updated
                                     st.success(f"Removed {len(selected_points)} outliers from {selected_clock}")
 
                                     timestamps = filtered_data_updated['Timestamp']
@@ -2597,7 +2670,8 @@ def main():
 
                     # Prepare the CSV data with only Timestamp and renamed Value column
                     formatted_data = st.session_state[f'outlier_data_{selected_clock}'][['Timestamp', 'Value']].copy()
-                    formatted_data['Value'] = formatted_data['Value'].map(lambda x: f"{x:.2f}")
+                    # Format the 'Value' column in scientific notation
+                    formatted_data['Value'] = formatted_data['Value'].map(lambda x: f"{x:.2e}")
                     formatted_data = formatted_data.rename(columns={'Value': 'Outlier_removed'})
                     csv_data = formatted_data.to_csv(index=False)
                     csv_content = csv_header + csv_data
@@ -2613,6 +2687,7 @@ def main():
                 else:
                     combined_data = []
                     combined_info = []
+                    outlier_removal_info = []
 
                     for index, row in st.session_state.df_display.iterrows():
                         if row["Choose Clock"]:
@@ -2639,6 +2714,23 @@ def main():
                             clock_data = clock_data.rename(columns={'Timestamp': f'Timestamp_{clock_name}', 'Value': f'Outlier_Removed_Value_{clock_name}'})
                             combined_data.append(clock_data)
 
+                            outlier_method = st.session_state.outlier_selection.get(clock_name, "None")
+                            if outlier_method == "Std_Dev Based":
+                                std_threshold = st.session_state.std_threshold.get(clock_name, 50.0)
+                                outlier_removal_info.append({
+                                    "Clock Name": clock_name,
+                                    "Outlier Method": outlier_method,
+                                    "Std Dev Multiplier": std_threshold
+                                })
+                            elif outlier_method == "Remove Selected Outliers":
+                                removed_outliers = st.session_state[f'outlier_data_{clock_name}'].get('removed_outliers', [])
+                                outlier_removal_info.append({
+                                    "Clock Name": clock_name,
+                                    "Outlier Method": outlier_method,
+                                    "Removed Outliers": removed_outliers
+                                })
+
+
                     if combined_data:
                         combined_df = pd.concat(combined_data, axis=1)
 
@@ -2652,14 +2744,14 @@ def main():
                                 name=clock_name
                             ))
 
-                        fig.update_xaxes(tickformat=".3f")
+                        fig.update_xaxes(tickformat=".1f")
                         fig.update_layout(
                             title="Outlier Removed Data of Clocks",
                             xaxis_title="MJD",
-                            yaxis_title="Value [ns]",
+                            yaxis_title=st.session_state.y_title,
                             yaxis=dict(tickmode='auto', nticks=10),
                             showlegend=True,
-                            xaxis=dict(tickformat=".3f", tickfont=dict(size=14, color="black"), exponentformat='none'),
+                            xaxis=dict(tickformat=".1f", tickfont=dict(size=14, color="black"), exponentformat='none'),
                             height=600
                         )
 
@@ -2668,19 +2760,28 @@ def main():
                         st.markdown("### Combined Information for Each Clock")
                         combined_info_df = pd.DataFrame(combined_info)
                         # Round the combined_info values to 2 decimal places
-                        combined_info_df['Max Value'] = combined_info_df['Max Value'].round(2)
-                        combined_info_df['Min Value'] = combined_info_df['Min Value'].round(2)
-                        combined_info_df['Std Dev'] = combined_info_df['Std Dev'].round(2)
+                        combined_info_df['Max Value'] = combined_info_df['Max Value'].apply(lambda x: f"{x:.2e}")
+                        combined_info_df['Min Value'] = combined_info_df['Min Value'].apply(lambda x: f"{x:.2e}")
+                        combined_info_df['Std Dev'] = combined_info_df['Std Dev'].apply(lambda x: f"{x:.2e}")
+                        outlier_methods = [st.session_state.outlier_selection.get(clock_name, "None") for clock_name in combined_info_df['Clock Name']]
+                        combined_info_df['Outlier Method'] = outlier_methods
 
-                        st.table(combined_info_df[['Clock Name', 'Max Value', 'Min Value', 'Std Dev']])
-
-                        combined_df = combined_df.round(2)
+                        st.table(combined_info_df[['Clock Name', 'Outlier Method','Max Value', 'Min Value', 'Std Dev']])
+                        # Create CSV header with clock info and filtering method
                         csv_header = "# Combined Clock Data\n"
                         for info in combined_info:
                             start_range = st.session_state.clock_ranges.get(info['Clock Name'], {}).get('start_range', 'N/A')
                             end_range = st.session_state.clock_ranges.get(info['Clock Name'], {}).get('end_range', 'N/A')
-                            csv_header += f"# Clock Name: {info['Clock Name']}, Start Range: {start_range}, End Range: {end_range}, Max Value: {info['Max Value']:.2f}, Min Value: {info['Min Value']:.2f}, Std Dev: {info['Std Dev']:.2f}\n"
-                            csv_header += f"# Clock Name: {info['Clock Name']}, Max Value: {info['Max Value']:.2f}, Min Value: {info['Min Value']:.2f}, Std Dev: {info['Std Dev']:.2f}\n"
+                            csv_header += f"# Clock Name: {info['Clock Name']}, Start Range: {start_range}, End Range: {end_range}, Max Value: {info['Max Value']:.2e}, Min Value: {info['Min Value']:.2e}, Std Dev: {info['Std Dev']:.2e}\n"
+                            # csv_header += f"# Clock Name: {info['Clock Name']}, Max Value: {info['Max Value']:.2e}, Min Value: {info['Min Value']:.2e}, Std Dev: {info['Std Dev']:.2e}\n"
+                        
+                        for outlier_info in outlier_removal_info:
+                            if outlier_info["Outlier Method"] == "Std_Dev Based":
+                                csv_header += f"# Clock Name: {outlier_info['Clock Name']}, Outlier Removal Method: {outlier_info['Outlier Method']}, Std Dev Multiplier: {outlier_info['Std Dev Multiplier']}\n"
+                            elif outlier_info["Outlier Method"] == "Remove Selected Outliers":
+                                removed_outliers = ", ".join(f"{outlier:.2e}" for outlier in outlier_info['Removed Outliers'])
+                                csv_header += f"# Clock Name: {outlier_info['Clock Name']}, Outlier Removal Method: {outlier_info['Outlier Method']}, Removed Outliers: {removed_outliers}\n"
+                                                    
                         csv_header += "# Data\n"
 
                         # Keep only the required columns
@@ -2690,6 +2791,13 @@ def main():
                             columns_to_keep.append(f'Outlier_Removed_Value_{clock_name}')
 
                         combined_df = combined_df[columns_to_keep]
+
+                        # Convert the columns datra to proper scientific format 
+                        value_columns = [col for col in combined_df.columns if 'Outlier_Removed_Value' in col]
+                        
+                        # Apply the formatting function only to the "Value" columns
+                        combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
+
                         csv = csv_header + combined_df.to_csv(index=False, lineterminator='\n')
                         st.download_button(
                             label="Download Combined Data as CSV",
@@ -2754,7 +2862,7 @@ def main():
 
                         colme1, colme2, colme3, colme4 = st.columns(4)
                         with colme1:
-                            window_size = st.number_input("Sampling Window Size", min_value=1, max_value=max_window, value=window_size_from_state, step=1)
+                            window_size = st.number_input("Sampling Window Size (< half of the length of data)", min_value=1, max_value=max_window, value=window_size_from_state, step=1)
 
                         st.session_state[f'window_size_{selected_clock}'] = window_size
                         st.session_state[f'smoothing_method_{selected_clock}'] = 'Moving Avg (overlapping)'
@@ -2794,7 +2902,7 @@ def main():
 
                         colme1, colme2, colme3, colme4 = st.columns(4)
                         with colme1:
-                            window_size = st.number_input("Sampling Window Size", min_value=1, max_value=max_window, value=window_size_from_state, step=1)
+                            window_size = st.number_input("Sampling Window Size (< half of the length of data)", min_value=1, max_value=max_window, value=window_size_from_state, step=1)
 
                         st.session_state[f'window_size_{selected_clock}'] = window_size
                         st.session_state[f'smoothing_method_{selected_clock}'] = 'Moving Avg (non overlapping)'
@@ -2853,46 +2961,76 @@ def main():
 
                     if combined_data:
                         combined_df_list = []
+                        action_details = []
+
                         for data, name in combined_data:
+                            data = data.rename(columns={'Value': f'Value_{name}', 'Timestamp': f'Timestamp_{name}'})
                             combined_df_list.append(data)
 
                         combined_df = pd.concat(combined_df_list, axis=1)
+                        
+                        # Drop 'Offset_Removed_Value' columns
+                        columns_to_drop = [col for col in combined_df.columns if 'Offset_Removed_Value' in col]
+                        combined_df.drop(columns=columns_to_drop, inplace=True)
 
                         fig_combined = go.Figure()
                         for data, name in combined_data:
-                            timestamp_key = 'Timestamp'
-                            value_key = 'Value'
-                            if timestamp_key in data and value_key in data:
-                                fig_combined.add_trace(go.Scatter(x=data[timestamp_key], y=data[value_key], mode='markers', name=name))
+                            timestamp_key = f'Timestamp_{name}'
+                            value_key = f'Value_{name}'
+                            if timestamp_key in combined_df and value_key in combined_df:
+                                fig_combined.add_trace(go.Scatter(x=combined_df[timestamp_key], y=combined_df[value_key], mode='markers', name=name))
 
-                        fig_combined.update_layout(title="Combined Data", xaxis_title="MJD", yaxis_title="Smoothed Phase data [ns]", height=600)
+                        fig_combined.update_layout(title="Combined Data", xaxis_title="MJD", yaxis_title=st.session_state.y_title, height=600)
                         st.plotly_chart(fig_combined, use_container_width=True)
 
-                        for data, name in combined_data:
+                        for name in [name for _, name in combined_data]:
+                            # method = st.session_state.smoothing_method.get(name, "None")
+                            # window_size = "N/A" if method == "None" else st.window_size.get(name, "N/A")
                             method = st.session_state.get(f'smoothing_method_{name}', "None")
-                            window_size = "N/A" if method == "None" else st.session_state.get(f'window_size_{name}', "N/A")
+                            window_size = st.session_state.get(f'window_size_{name}', "N/A")
+
+                            mean_value = combined_df[f'Value_{name}'].mean()
+                            std_dev_value = combined_df[f'Value_{name}'].std()
+                            
                             action_details.append({
                                 "Clock": name,
                                 "Selection": method,
                                 "Sampling Window": window_size,
-                                "Mean Value": data['Value'].mean(),
-                                "Std Dev": data['Value'].std()
+                                "Mean Value": f"{mean_value:.2e}" if pd.notnull(mean_value) else "N/A",
+                                "Std Dev": f"{std_dev_value:.2e}" if pd.notnull(std_dev_value) else "N/A"
                             })
 
                         action_df = pd.DataFrame(action_details)
                         action_df['Sampling Window'] = action_df['Sampling Window'].astype(str)
 
-                        combined_df = combined_df.round(2)
+                        # Display the action details table
+                        st.markdown("### Combined Information for Each Clock")
+                        st.table(action_df[['Clock', 'Selection', 'Sampling Window', 'Mean Value', 'Std Dev']])
+
+                        # Create CSV header
                         csv_header = "# Combined Clock Data\n"
                         for action in action_details:
-                            csv_header += f"# Clock: {action['Clock']}, Selection: {action['Selection']}, Sampling Window: {action['Sampling Window']}, Mean Value: {action['Mean Value']:.2f}, Std Dev: {action['Std Dev']:.2f}\n"
+                            csv_header += f"# Clock: {action['Clock']}, Selection: {action['Selection']}, Sampling Window: {action['Sampling Window']}, Mean Value: {action['Mean Value']}, Std Dev: {action['Std Dev']}\n"
+                            # csv_header += f"# Clock: {action['Clock']}, Selection: {action['Selection']}, Sampling Window: {action['Sampling Window']}, Mean Value: {action['Mean Value']:.2e}, Std Dev: {action['Std Dev']:.2e}\n"
                         csv_header += "# Data\n"
+
+                        # Convert the columns data to proper scientific format
+                        value_columns = [col for col in combined_df.columns if 'Value_' in col]
+
+                        # # Debug: Print the value columns to be formatted
+                        # print("Value columns to be formatted:", value_columns)
+
+                        # Apply the formatting function only to the "Value" columns
+                        combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
+
                         csv = csv_header + combined_df.to_csv(index=False)
+
+                        # Add download button
                         st.download_button(label="Download Combined Data as CSV", data=csv, file_name='combined_data.csv', mime='text/csv')
 
-                        st.session_state.smoothed_data = combined_df
-                        st.markdown("### Action Details for Each Clock")
-                        st.table(action_df)
+                        st.smoothed_data = combined_df
+                        # st.markdown("### Action Details for Each Clock")
+                        # st.table(action_df)
 
             else:
                 st.warning("Please go to the Raw Data tab and select the clocks you want to analyse and click the button Process Selected Clocks",icon="⚠️")
@@ -2942,7 +3080,7 @@ def main():
                     clock_data = get_latest_data(clock_name, 'stability').dropna().copy()
                     
                     timestamps = clock_data['Timestamp'].values
-                    values = clock_data['Value'].values * 1E-9
+                    values = clock_data['Value'].values
 
                     plot_data[clock_name] = (timestamps, values)
                     csv_data_dict[clock_name] = clock_data.copy()
@@ -3128,13 +3266,13 @@ def main():
                                 if offset_method == "Remove Offset[Mean Value]":
                                     mean_after = st.session_state.offset_means_after.get(clock_name)
                                     if mean_after is not None:
-                                        offset_info = f"Method: {offset_method}<br>Mean Before [ns]: {mean_before:.2f}<br>Mean After [ns]: {mean_after:.2f}"
+                                        offset_info = f"Method: {offset_method}<br>Mean Before [{st.session_state.order_of_data}]: {mean_before:.2e}<br>Mean After [{st.session_state.order_of_data}]: {mean_after:.2e}"
                                     else:
-                                        offset_info = f"Method: {offset_method}<br>Mean Before [ns]: {mean_before:.2f}"
+                                        offset_info = f"Method: {offset_method}<br>Mean Before [{st.session_state.order_of_data}]: {mean_before:.2e}"
                                 else:
-                                    offset_info = f"Method: {offset_method}<br>Mean Before [ns]: {mean_before:.2f}"
+                                    offset_info = f"Method: {offset_method}<br>Mean Before [{st.session_state.order_of_data}]: {mean_before:.2e}"
                             else:
-                                offset_info = f"Method: {offset_method}<br>Mean Before [ns]: N/A"
+                                offset_info = f"Method: {offset_method}<br>Mean Before [{st.session_state.order_of_data}]: N/A"
                             update_action(clock_name, 'Offset Removed', offset_info)
                                                 
 
@@ -3142,7 +3280,7 @@ def main():
                             outlier_method = st.session_state.outlier_selection[clock_name]
                             if outlier_method == "Std_Dev Based":
                                 std_threshold = st.session_state.std_threshold[clock_name]
-                                outlier_info = f"Method: {outlier_method}<br>Multiplier: {std_threshold:.2f}"
+                                outlier_info = f"Method: {outlier_method}<br>Multiplier: {std_threshold:.2e}"
                             else:
                                 outlier_info = f"Method: {outlier_method}"
                             update_action(clock_name, 'Outlier Filtered', outlier_info)
