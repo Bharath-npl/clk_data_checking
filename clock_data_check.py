@@ -318,7 +318,7 @@ def process_inputs(files):
     
 
     # Process files based on the type of file combination selected
-    if st.session_state.file_combo == 'Single/ Mutiple files of same clock':
+    if st.session_state.file_combo == 'Mutiple files of same clock':
         combined_df = pd.DataFrame()
         # st.write(st.session_state.files_uploaded)
         for file in files:
@@ -1713,7 +1713,7 @@ def main():
         with col3:
             # st.write("**Select the file combination** 👇")
             with st.popover("File combination  :link:", help="Choose how you are combining your files"):
-                st.session_state.file_combo = st.radio("Select the file combination:", ['Each file is a different clock','Single/ Mutiple files of same clock'],help="Choose the file arrangement you have")
+                st.session_state.file_combo = st.radio("Select the file combination:", ['Each file is a different clock','Mutiple files of same clock'],help="Choose the file arrangement you have")
                 st.session_state.input_data.update({'file_combo': st.session_state.file_combo})
         # Data Format 
         with col4:
@@ -1877,7 +1877,7 @@ def main():
                         st.session_state.proceed = False  # Change the proceed to make it false to avoid the rerun of the app during the changes in the input settings by the user
 
                     # If the user selection is single clock with multiple files
-                    if st.session_state.total_data and 'combined' in st.session_state.total_data and st.session_state.file_combo == 'Single/ Mutiple files of same clock':
+                    if st.session_state.total_data and 'combined' in st.session_state.total_data and st.session_state.file_combo == 'Mutiple files of same clock':
                         df = st.session_state.total_data["combined"]
                         if 'Value' in df.columns:
                             clk_data = df['Value'].iloc[:1000].tolist() if len(df['Value']) > 1000 else df['Value'].tolist()
@@ -1971,7 +1971,7 @@ def main():
                             # st.write(f"Selected {clock_name} for further processing")
                             file_key = file.split('.')[0]
 
-                            if st.session_state.file_combo == 'Single/ Multiple files of same clock':
+                            if st.session_state.file_combo == 'Multiple files of same clock':
                                 if 'combined' in st.session_state.total_data:
                                     st.session_state.clk_to_analyse = st.session_state.total_data['combined']
                                     st.session_state.clk_filename = file
