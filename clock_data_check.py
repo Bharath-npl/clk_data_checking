@@ -134,48 +134,53 @@ def convert_to_nanoseconds(value, unit, signal_freq_MHz):
     """Converts the given TIME / Frequency data value from the specified unit to nanoseconds."""
     
     # Check if this is a frequency to time conversion scenario
-    if signal_freq_MHz != 0:
-        # First convert the input frequency difference to a period in seconds (T = 1 / f)
-        if unit == 'Hz':
-            frequency_hz = value  # Directly use the value in Hz
-        elif unit == 'mHz':
-            frequency_hz = value / 1_000  # Convert mHz to Hz
-        elif unit == 'µHz':
-            frequency_hz = value / 1_000_000  # Convert µHz to Hz
-        elif unit == 'nHz':
-            frequency_hz = value / 1_000_000_000  # Convert nHz to Hz
-        else:
-            return None  # Unknown frequency unit
+    # if signal_freq_MHz != 0:
+    #     # First convert the input frequency difference to a period in seconds (T = 1 / f)
+    #     if unit == 'Hz':
+    #         frequency_hz = value  # Directly use the value in Hz
+    #     elif unit == 'mHz':
+    #         frequency_hz = value / 1_000  # Convert mHz to Hz
+    #     elif unit == 'µHz':
+    #         frequency_hz = value / 1_000_000  # Convert µHz to Hz
+    #     elif unit == 'nHz':
+    #         frequency_hz = value / 1_000_000_000  # Convert nHz to Hz
+    #     else:
+    #         return None  # Unknown frequency unit
         
-        # Assuming signal_freq_MHz is the base frequency and value is the difference
-        total_frequency_hz = signal_freq_MHz * 1_000_000 + frequency_hz
-        period_seconds = 1 / total_frequency_hz  # Calculate the period in seconds
-        return period_seconds * 1_000_000_000  # Convert period from seconds to nanoseconds
+    #     # Assuming signal_freq_MHz is the base frequency and value is the difference
+    #     total_frequency_hz = signal_freq_MHz * 1_000_000 + frequency_hz
+    #     period_seconds = 1 / total_frequency_hz  # Calculate the period in seconds
+    #     return period_seconds * 1_000_000_000  # Convert period from seconds to nanoseconds
 
-    # Handle direct time unit conversions when no signal frequency is specified
+    # # Handle direct time unit conversions when no signal frequency is specified
+    # else:
+    if unit == 'ns':
+        st.session_state.y_title = "Phase Data [ns]"
+        st.session_state.unitmulty = 1E+9
+        return value * 1_000_000_000  # No conversion needed for nanoseconds
+        
+    elif unit == 'µs':
+        st.session_state.y_title = "Phase Data [µs]"
+        st.session_state.unitmulty = 1E+6
+        return value * 1_000_000  # Convert microseconds to nanoseconds
+    
+    elif unit == 'ms':
+        st.session_state.y_title = "Phase Data [ms]"
+        st.session_state.unitmulty = 1E+3
+        return value * 1_000  # Convert milliseconds to nanoseconds
+    
+    elif unit == 's':
+        st.session_state.y_title = "Phase Data [s]"
+        st.session_state.unitmulty = 1
+        return value  # Convert seconds to nanoseconds
+    
+    elif unit == "Unitless":
+        st.session_state.y_title = "Fractional Frequency Offset"
+        st.session_state.unitmulty = 1
+        return value  # Nothing to convert 
+
     else:
-        if unit == 'ns':
-            st.session_state.y_title = "Phase Data [ns]"
-            st.session_state.unitmulty = 1E+9
-            return value * 1_000_000_000  # No conversion needed for nanoseconds
-            
-        elif unit == 'µs':
-            st.session_state.y_title = "Phase Data [µs]"
-            st.session_state.unitmulty = 1E+6
-            return value * 1_000_000  # Convert microseconds to nanoseconds
-        
-        elif unit == 'ms':
-            st.session_state.y_title = "Phase Data [ms]"
-            st.session_state.unitmulty = 1E+3
-            return value * 1_000  # Convert milliseconds to nanoseconds
-        
-        elif unit == 's':
-            st.session_state.y_title = "Phase Data [s]"
-            st.session_state.unitmulty = 1
-            return value  # Convert seconds to nanoseconds
-        
-        else:
-            return None  # Unknown time unit
+        return None  # Unknown time unit
 
 
 
@@ -227,6 +232,13 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
             df = pd.read_csv(StringIO(''.join(lines[first_valid_index:])), sep='\s+',
                             header=None, engine='python', usecols=[timestamp_col_index, value_col_index])# dtype={timestamp_col_index: str, value_col_index: float})
             # st.write(df.head(10))  # Show the first few rows to verify structure
+
+            # # Format the DataFrame to display numbers in scientific notation
+            # df_styled = df.style.format({value_col_index: "{:.2e}"})
+            
+            # # Display the DataFrame using Streamlit
+            # st.write(df_styled)
+      
         except Exception as e:
                 st.error("Failed to read time stamp data from the assigned column ")
                 return None
@@ -301,7 +313,10 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
 
     #     if data_scale
 
-
+    # Format the DataFrame to display numbers in scientific notation
+    # df_styled = df.style.format({value_col_index: "{:.2e}"})
+    # st.write(df_styled)
+    # st.write(df)
     return df # Return the processed DataFrame if everything is fine
 
 
@@ -355,7 +370,7 @@ def process_inputs(files):
                 if st.session_state.timestamp_col != 'NA':
                     timestamps = set(df['Timestamp'].tolist())
                     if all_timestamps & timestamps:
-                        st.error("Time stamps match in both the files, It seems to be of a different clock files, please check!")
+                        st.error("Each file has same Timestamps, it means same clock at same time records different measurements. Each file could be of different clock, please check !.\n If you still want to continue please select TIMESTAMP column to be NA ")
                         return {}
                     all_timestamps.update(timestamps)
                 elif st.session_state.timestamp_col == 'NA':
@@ -370,21 +385,31 @@ def process_inputs(files):
         
         if not combined_df.empty:
             data_frames['combined'] = combined_df
-            st.write(data_frames)
+            # st.write(data_frames)
 
     else:  # Each file is a different clock
-        # timestamp_offset = 0
+       
         for file in files:
             df = process_file(file, st.session_state.timestamp_col, st.session_state.data_col-1, 
                             st.session_state.data_type, st.session_state.order_of_data, st.session_state.freq_scale)
+            
             if df is not None:
-                # df['Timestamp'] = df['Timestamp'] + timestamp_offset
-                # timestamp_offset = df['Timestamp'].max() + 1
-                df.iloc[:, 1] = df.iloc[:, 1].apply(convert_to_nanoseconds, args=(st.session_state.order_of_data, st.session_state.freq_scale))
-                file_key = file.name.split('.')[0]  # Using file name without extension as the key
-                data_frames[file_key] = df
+                # Check if all values in 'Value' column are None or empty strings
+                if df['Value'].apply(lambda x: x is None or x == '').all():
+                    st.warning(f"The data in the file {file.name} has None values")
+                # st.write("Danger")
 
-    # st.write(data_frames)
+                # Convert values to nanoseconds if there are valid entries
+                if not df['Value'].isnull().all():
+                
+                    df.iloc[:, 1] = df.iloc[:, 1].apply(convert_to_nanoseconds, args=(st.session_state.order_of_data, st.session_state.freq_scale))
+         
+                file_key = file.name.split('.')[0]  # Using file name without extension as the key
+
+                data_frames[file_key] = df
+    
+    
+    
     return data_frames
     
 
@@ -1279,11 +1304,12 @@ def frequency2phase(freqdata, rate):
     return phasedata
 
 def input_to_phase(data, rate, data_type):
+   
     """ Take either phase or frequency as input and return phase
     """
     if data_type == "phase":
         return data
-    elif data_type == "freq":
+    elif data_type == "frequency":
         return frequency2phase(data, rate)
     else:
         raise Exception("unknown data_type: " + data_type)
@@ -1694,7 +1720,7 @@ def main():
 
         # col1, col2, col3, col4, col5, col6 = st.columns(widths)
             # Data types available for selection
-        data_types = ['Phase/Time Data', 'Fractional Frequency', 'Frequency Data']
+        data_types = ['Phase/Time Data', 'Fractional Frequency']
         
         # First column for file upload inside a popover
         with col1:
@@ -1717,8 +1743,8 @@ def main():
 
         with col2:
             # st.write("**Select the type of Data** 👇")
-            # Popover for Time Data Settings
-            with st.popover("Input Data settings :alarm_clock:", help="Choose the data you are trying to process"):
+            # Popover for Time Data settings
+            with st.popover("Input Data Settings :alarm_clock:", help="Choose the data you are trying to process"):
                 # st.session_state.data_type = st.radio("Select the type of Data you have:", ['Time Data', 'Frequency Data'])
 
                 # data_type = ['Time Data', 'Frequency Data']
@@ -1741,20 +1767,29 @@ def main():
                     'signal_frequency': st.session_state.freq_scale })
             # # Popover for Frequency Data settings
             # with st.popover("Frequency Data Settings :radio:", help="Configure settings for frequency data processing"):
-                if st.session_state.data_type == 'Frequency Data':
+                # if st.session_state.data_type == 'Frequency Data':
+                #     st.session_state.freq_scale = st.select_slider("**Select the frequency of the signal (MHz)**",
+                #                                 options=[0, 5, 10, 100],
+                #                                 help="Select the base frequency scale in MHz.")
+                #     st.session_state.order_of_data = st.selectbox("**Select the units of your data (Hz)**",
+                #                                     ('mHz', 'Hz','µHz','nHz'),
+                #                                     help="Adjust the frequency scale by specifying the power of ten.")
+                #     st.session_state.input_data.update({
+                #     'data_type': st.session_state.data_type,
+                #     'units_data': st.session_state.order_of_data,
+                #     'signal_frequency': st.session_state.freq_scale })
+
+                if st.session_state.data_type == 'Fractional Frequency':
                     st.session_state.freq_scale = st.select_slider("**Select the frequency of the signal (MHz)**",
                                                 options=[0, 5, 10, 100],
                                                 help="Select the base frequency scale in MHz.")
-                    st.session_state.order_of_data = st.selectbox("**Select the units of your data (Hz)**",
-                                                    ('mHz', 'Hz','µHz','nHz'),
-                                                    help="Adjust the frequency scale by specifying the power of ten.")
+                    st.session_state.order_of_data = 'Unitless'
                     st.session_state.input_data.update({
                     'data_type': st.session_state.data_type,
                     'units_data': st.session_state.order_of_data,
                     'signal_frequency': st.session_state.freq_scale })
-
-                if st.session_state.data_type == 'Fractional Frequency':
-                    st.warning("Not Operational yet")
+                    
+                    # st.warning("Not Operational yet")
         
         # File combination 
         with col3:
@@ -1810,12 +1845,13 @@ def main():
         
         # Check if the proceed flag has been set before updating the display
         if st.session_state.proceed or st.session_state.data_loaded:
+            
             # Use current session state data
             data_dict = {
                 'Files uploaded': st.session_state.input_data['files_uploaded'],
                 'Type of Data': st.session_state.input_data['data_type'],
                 'Units of data': st.session_state.input_data['units_data'],
-                'Signal frequency': st.session_state.input_data['signal_frequency'],
+                'Signal frequency': f"{st.session_state.input_data['signal_frequency']} MHz",
                 'File combo': st.session_state.input_data['file_combo'],
                 'Timestamp column': st.session_state.input_data['timestamp_col'],
                 'Data column': st.session_state.input_data['data_col'],
@@ -1950,6 +1986,7 @@ def main():
                         sample_data = []
                         choose_clock = []  # List to handle checkbox state for each clock
                         clock_name_mapping = {}
+
                         # Process each file as a different clock
                         for idx, (name, df) in enumerate(st.session_state.total_data.items()):
                             if 'Value' in df.columns:
@@ -3156,7 +3193,7 @@ def main():
                         marker = markers[color_idx % len(markers)]
                         if st.session_state.data_type == 'Phase/Time Data':
                             input_data_type = "phase"
-                        elif st.session_state.data_type == 'Frequency Data':
+                        elif st.session_state.data_type == 'Fractional Frequency':
                             input_data_type = "frequency"
 
                         if analysis_type == "TDEV":
