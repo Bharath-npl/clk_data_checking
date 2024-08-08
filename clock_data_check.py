@@ -1717,7 +1717,7 @@ def main():
 
         with col2:
             # st.write("**Select the type of Data** 👇")
-            # Popover for Time Data settings
+            # Popover for Time Data Settings
             with st.popover("Input Data settings :alarm_clock:", help="Choose the data you are trying to process"):
                 # st.session_state.data_type = st.radio("Select the type of Data you have:", ['Time Data', 'Frequency Data'])
 
@@ -1759,7 +1759,7 @@ def main():
         # File combination 
         with col3:
             # st.write("**Select the file combination** 👇")
-            with st.popover("File combination  :link:", help="Choose how you are combining your files"):
+            with st.popover("File Description  :link:", help="Choose how you are combining your files"):
                 st.session_state.file_combo = st.radio("Select the file combination:", ['Each file is a different clock','Multiple files of same clock'],help="Choose the file arrangement you have")
                 st.session_state.input_data.update({'file_combo': st.session_state.file_combo})
         # Data Format 
