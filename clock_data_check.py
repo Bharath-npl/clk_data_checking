@@ -178,12 +178,34 @@ def convert_to_nanoseconds(value, unit, signal_freq_MHz):
             return None  # Unknown time unit
 
 
+
+def normalize_values(values):
+    """
+    Normalize values to integers by determining an appropriate scale.
+    """
+    min_val = min(values)
+    max_val = max(values)
+    scale_factor = 1
+
+    # If all values are less than 1, scale up
+    if max_val < 1:
+        while max_val < 1:
+            max_val *= 10
+            scale_factor *= 10
+    # If values are very large, scale down
+    elif min_val > 1:
+        while min_val > 1:
+            min_val /= 10
+            scale_factor /= 10
+
+    normalized_values = [int(val * scale_factor) for val in values]
+    return normalized_values
+
+
 # Function to read and combine clock data while ignoring headers and special symbols
 
 def process_file(file, timestamp_col_index, value_col_index, data_type, data_scale, frequency):
-    # st.write(f"file: {file}")
-    # st.write(f"time column index: {timestamp_col_index}")
-    # st.write(f"value colm index: {value_col_index}")
+
     # Convert uploaded file content directly to StringIO
     file.seek(0)
     content = StringIO(file.read().decode('utf-8'))
@@ -197,9 +219,10 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
     if first_valid_index is None:
         st.error(f"No valid data found in file {file.name}.")
         return None  # Return None if no valid data is found
-
+   
     # Read the file into a pandas DataFrame from the first valid index sep='\s+'
     if timestamp_col_index != 'NA':
+       
         try:
             df = pd.read_csv(StringIO(''.join(lines[first_valid_index:])), sep='\s+',
                             header=None, engine='python', usecols=[timestamp_col_index, value_col_index])# dtype={timestamp_col_index: str, value_col_index: float})
@@ -207,13 +230,15 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
         except Exception as e:
                 st.error("Failed to read time stamp data from the assigned column ")
                 return None
-    else: 
+    else:  # If the time stamp is NA 
+        
         try:
             df = pd.read_csv(StringIO(''.join(lines[first_valid_index:])), sep='\s+',
                             header=None, engine='python', usecols=[value_col_index])
             
             # Generate the timestamp values starting from 1 to the length of the values column
             df['Timestamp'] = range(1, len(df) + 1)
+         
             # Reorder columns to place 'Timestamp' first
             df = df[['Timestamp', value_col_index]]
             
@@ -316,27 +341,49 @@ def process_inputs(files):
     if st.session_state.timestamp_col != 'NA':
         st.session_state.timestamp_col = st.session_state.timestamp_col -1
     
-
+   
     # Process files based on the type of file combination selected
-    if st.session_state.file_combo == 'Mutiple files of same clock':
+    if st.session_state.file_combo == 'Multiple files of same clock':
         combined_df = pd.DataFrame()
-        # st.write(st.session_state.files_uploaded)
+        all_timestamps = set()
+        last_timestamp = 0
+        
         for file in files:
-            df = process_file(file, st.session_state.timestamp_col, st.session_state.data_col-1, st.session_state.data_type, st.session_state.order_of_data, st.session_state.freq_scale)
+            df = process_file(file, st.session_state.timestamp_col, st.session_state.data_col-1, 
+                            st.session_state.data_type, st.session_state.order_of_data, st.session_state.freq_scale)
             if df is not None:
-                # combined_df = pd.concat([combined_df, df], ignore_index=True)
+                if st.session_state.timestamp_col != 'NA':
+                    timestamps = set(df['Timestamp'].tolist())
+                    if all_timestamps & timestamps:
+                        st.error("Time stamps match in both the files, It seems to be of a different clock files, please check!")
+                        return {}
+                    all_timestamps.update(timestamps)
+                elif st.session_state.timestamp_col == 'NA':
+                    # Assign continuous timestamps manually
+                    df['Timestamp'] = range(last_timestamp + 1, last_timestamp + len(df) + 1)
+                    last_timestamp += len(df)       
+
+               
                 df.iloc[:, 1] = df.iloc[:, 1].apply(convert_to_nanoseconds, args=(st.session_state.order_of_data, st.session_state.freq_scale))
+                
                 combined_df = pd.concat([combined_df, df], ignore_index=True)
+        
         if not combined_df.empty:
             data_frames['combined'] = combined_df
+            st.write(data_frames)
+
     else:  # Each file is a different clock
-        # st.write(st.session_state.files_uploaded)
+        # timestamp_offset = 0
         for file in files:
-            df = process_file(file, st.session_state.timestamp_col, st.session_state.data_col-1,st.session_state.data_type, st.session_state.order_of_data, st.session_state.freq_scale)
+            df = process_file(file, st.session_state.timestamp_col, st.session_state.data_col-1, 
+                            st.session_state.data_type, st.session_state.order_of_data, st.session_state.freq_scale)
             if df is not None:
+                # df['Timestamp'] = df['Timestamp'] + timestamp_offset
+                # timestamp_offset = df['Timestamp'].max() + 1
                 df.iloc[:, 1] = df.iloc[:, 1].apply(convert_to_nanoseconds, args=(st.session_state.order_of_data, st.session_state.freq_scale))
                 file_key = file.name.split('.')[0]  # Using file name without extension as the key
                 data_frames[file_key] = df
+
     # st.write(data_frames)
     return data_frames
     
@@ -1713,7 +1760,7 @@ def main():
         with col3:
             # st.write("**Select the file combination** 👇")
             with st.popover("File combination  :link:", help="Choose how you are combining your files"):
-                st.session_state.file_combo = st.radio("Select the file combination:", ['Each file is a different clock','Mutiple files of same clock'],help="Choose the file arrangement you have")
+                st.session_state.file_combo = st.radio("Select the file combination:", ['Each file is a different clock','Multiple files of same clock'],help="Choose the file arrangement you have")
                 st.session_state.input_data.update({'file_combo': st.session_state.file_combo})
         # Data Format 
         with col4:
@@ -1745,10 +1792,9 @@ def main():
         with col6:
             # st.write("**Process/Analyse**")
             # proceed = st.button("Plot_data")
-            if st.button("Proceed"):
+            if st.button("Proceed to Data Checking"):
                 st.session_state.proceed = True
-                # clks_data = process_inputs(files_uploaded)
-                # st.session_state.clks_data = process_inputs(files_uploaded)#, time_column, frequency_column, type_of_data, st.session_state.order_of_data)
+
 
 
     # Second container 
@@ -1827,6 +1873,7 @@ def main():
                 "Clock Name": pd.Series(dtype='str'),
                 "Sample_data": pd.Series(dtype='str'),
                 "Choose Clock": pd.Series(dtype='bool') })
+                
 
             if 'checkbox_states' not in st.session_state:
                 st.session_state.checkbox_states = [False] * len(st.session_state.df_display)
@@ -1843,8 +1890,10 @@ def main():
 
             # st.session_state.checkbox_states = st.session_state.checkbox_states[:num_rows]
 
+            
             # Function to synchronize checkbox states with df_display
             def sync_checkbox_states():
+                
                 for i, row in st.session_state.df_display.iterrows():
                     clock_name = row['Clock Name']
                     if clock_name in st.session_state.checkbox_states:
@@ -1856,9 +1905,10 @@ def main():
             def generate_unique_key(index):
                 return f"checkbox_{index}"
 
+            
             # Synchronize checkbox states initially
             sync_checkbox_states()
-            # st.write(f"Check box states BEFORE: {st.session_state.checkbox_states}")
+            # st.write(f"Check box states BEFORE: {st.session_state.checkbox_states}") 
             # Define the column configurations
             column_config = {
                 "Files uploaded": st.column_config.TextColumn("Files Uploaded", disabled=True,width= "small"),
@@ -1877,16 +1927,21 @@ def main():
                         st.session_state.proceed = False  # Change the proceed to make it false to avoid the rerun of the app during the changes in the input settings by the user
 
                     # If the user selection is single clock with multiple files
-                    if st.session_state.total_data and 'combined' in st.session_state.total_data and st.session_state.file_combo == 'Mutiple files of same clock':
+                    if st.session_state.total_data and 'combined' in st.session_state.total_data and st.session_state.file_combo == 'Multiple files of same clock':
                         df = st.session_state.total_data["combined"]
+                        clock_name_mapping = {}
                         if 'Value' in df.columns:
                             clk_data = df['Value'].iloc[:1000].tolist() if len(df['Value']) > 1000 else df['Value'].tolist()
                             clk_data_json = json.dumps(clk_data)  # Convert list to JSON string
                             st.session_state.df_display = pd.DataFrame({
                                 "Files uploaded": [st.session_state.valid_filenames],  # All filenames in one cell
+                                "Clock Name": 'Clock 1',
                                 "Sample_data": clk_data_json,  # First 1000 data points in one cell
                                 "Choose Clock": [False]  # Initialize checkboxes as unchecked
                             }).astype({"Choose Clock": "bool"})
+                            
+                            clock_name_mapping["Clock 1"] = 'combined'  # Map dynamic name to original name
+
                         else:
                             st.error("'Value' column not found in the DataFrame.")
                     elif st.session_state.total_data:  # If the result is not none/empty and it also means each file is a different clock
@@ -1899,7 +1954,8 @@ def main():
                         for idx, (name, df) in enumerate(st.session_state.total_data.items()):
                             if 'Value' in df.columns:
                                 clk_data = df['Value'].iloc[:1000].tolist() if len(df['Value']) > 1000 else df['Value'].tolist()
-                                clk_data_json = json.dumps(clk_data)  # Convert list to JSON string
+                                clk_data = normalize_values(clk_data)  # Normalize values here
+                                clk_data_json = json.dumps(clk_data)
                                 files_uploaded.append(name)
                                 clock_names.append(f"Clock {idx + 1}")  # Dynamic clock names
                                 clock_name_mapping[f"Clock {idx + 1}"] = name  # Map dynamic name to original name
@@ -1908,12 +1964,12 @@ def main():
                             else:
                                 st.error(f"'Value' column not found in the DataFrame for {name}.")
 
-                    st.session_state.df_display = pd.DataFrame({
-                        "Files uploaded": files_uploaded,
-                        "Clock Name": clock_names,
-                        "Sample_data": sample_data,
-                        "Choose Clock": choose_clock  # Checkbox column data
-                    }).astype({"Choose Clock": "bool"})
+                        st.session_state.df_display = pd.DataFrame({
+                            "Files uploaded": files_uploaded,
+                            "Clock Name": clock_names,
+                            "Sample_data": sample_data,
+                            "Choose Clock": choose_clock  # Checkbox column data
+                        }).astype({"Choose Clock": "bool"})
 
                     
                     # Initialize checkbox states (optional, you might handle this in data processing)
@@ -1988,6 +2044,7 @@ def main():
                     # st.write(st.session_state.clk_to_analyse)            
                     # st.write(st.session_state.total_data)        
                     
+
                     # Initialize the data frames for all the tabs for the selected clocks
                     for clock_name in selected_clock_names:
                         initialize_clock_data(clock_name)
@@ -2082,7 +2139,9 @@ def main():
                     for index, row in st.session_state.df_display.iterrows():
                         if row["Clock Name"] == selected_clock:
                             clock_name = row["Clock Name"]
+                            # st.write(f"Clock  Name: {clock_name}")
                             clk_analysis = get_latest_data(clock_name, 'data_range')
+                            # st.write(clk_analysis)
                             st.session_state['clk_data_full'] = clk_analysis.copy()
 
                             if clock_name not in st.session_state.clock_ranges:
