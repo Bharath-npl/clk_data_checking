@@ -2668,7 +2668,7 @@ def main():
 
                     elif selected_outlier == 'Remove Selected Outliers':
                         filtered_data = st.session_state[f'outlier_data_{selected_clock}']
-                        st.markdown(":violet-background[**Select the outliers using Box select or Lasso select to delete them**]")
+                        st.markdown(":violet-background[**Zoom-in to the outlier and select it/them using a Box or Lasso selection**]")
                         timestamps = filtered_data['Timestamp']
                         data_to_plot = filtered_data['Value']
 
