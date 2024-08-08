@@ -256,7 +256,7 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
             
             # st.write(df.head(10))  # Show the first few rows to verify structure
         except Exception as e:
-                st.error("Failed to read the measurements from the assigned DATA column")
+                st.error("Failed to read the measurements from the assigned DATA column, maybe Check the Data column number properly.")
                 return None       
 
     if df.empty:
