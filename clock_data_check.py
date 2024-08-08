@@ -3,7 +3,7 @@
 # ****************** Clock Data Checking ******
 
 
-# to tune this code in your local PC use the follwoing command **
+# to run this code in your local PC use the following command **
 # streamlit run .\clk_data_checking.py --server.port 8888
 
 import streamlit as st
