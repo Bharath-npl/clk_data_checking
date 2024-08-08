@@ -295,7 +295,7 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
         # st.write(df['Timestamp'].head(10))  # Display the first few timestamps for debugging
         # st.write(df['Timestamp'])
         if not validate_timestamp_column(df['Timestamp']):
-            st.error(f"Invalid timestamp data in selected column {timestamp_col_index } in file {file.name}.")
+            st.error(f"Invalid timestamp data in selected column {timestamp_col_index } in file {file.name}. Try to choose Timestamp column as NA assuming your data is continious.")
             return None  # Return None if validation fails
     
     # st.write(df['Value'])
