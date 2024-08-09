@@ -3164,8 +3164,8 @@ def main():
                 # Default selections if not set in session state
                 if 'analysis_selection' not in st.session_state:
                     st.session_state.analysis_selection = ["ADEV"]
-                if 'selected_clks' not in st.session_state:
-                    st.session_state.selected_clks = [selected_clk_names[0]] if selected_clk_names else []
+                if 'default_clk' not in st.session_state:
+                    st.session_state.default_clk = [selected_clk_names[0]] if selected_clk_names else []
 
                 with col1:
                     # st.markdown("#### Select Stability Analysis Type")
@@ -3176,10 +3176,12 @@ def main():
 
                 with col2:
                     # st.markdown("#### Select Clocks:")
-                    clk_list = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
-                    selected_clocks = st.multiselect("Choose clocks:", selected_clk_names, default=clk_list)
+                    # keep updated the clock selection
+                    st.session_state.default_clk = [selected_clk_names[0]] if selected_clk_names else []
+
+                    selected_clks = st.multiselect("Choose clocks:", selected_clk_names, default=st.session_state.default_clk)
                     # Store the selection in session state
-                    st.session_state.selected_clks = selected_clocks
+                    st.session_state.selected_clks = selected_clks
 
                 plot_data = {}
                 csv_data_dict = {}
