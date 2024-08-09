@@ -3,7 +3,7 @@
 # ****************** Clock Data Checking ******
 
 
-# to run this code in your local PC use the following command **
+# to tune this code in your local PC use the follwoing command **
 # streamlit run .\clk_data_checking.py --server.port 8888
 
 import streamlit as st
@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import json
 from streamlit_plotly_events import plotly_events
+import math
 
 st.set_page_config(page_title="Clock Data Checking", page_icon=":stopwatch:", layout="wide")
 st.markdown('<style>div.block-container{padding-top:1rem;}</style>', unsafe_allow_html=True)
@@ -185,140 +186,144 @@ def convert_to_nanoseconds(value, unit, signal_freq_MHz):
 
 
 def normalize_values(values):
+
+    # st.write(f"Input values: {values}")
     """
     Normalize values to integers by determining an appropriate scale.
     """
+    iteration_limit = 1000  # Limit the number of iterations to prevent infinite loops
+    max_scale_factor = 10**8  # Cap the scale factor to avoid overflow issues
+
+    # Handle case where all values might be zero
+    if all(val == 0 for val in values):
+        return [0] * len(values)
+    
     min_val = min(values)
     max_val = max(values)
     scale_factor = 1
 
-    # If all values are less than 1, scale up
+    # Handle the scaling up for values less than 1
     if max_val < 1:
-        while max_val < 1:
+        while max_val < 1 and scale_factor < 10**iteration_limit:
             max_val *= 10
             scale_factor *= 10
-    # If values are very large, scale down
+            if scale_factor > max_scale_factor:
+                # st.warning("Scale factor capped to avoid overflow.")
+                break
+
+    # Handle the scaling down for very large values
     elif min_val > 1:
-        while min_val > 1:
+        while min_val > 1 and scale_factor > 10**-iteration_limit:
             min_val /= 10
             scale_factor /= 10
+            if scale_factor < 1/max_scale_factor:
+                # st.warning("Scale factor capped to avoid overflow.")
+                break
 
-    normalized_values = [int(val * scale_factor) for val in values]
+    # Apply scaling to all values, capping large integers
+    normalized_values = []
+    for val in values:
+        scaled_value = val * scale_factor
+        if abs(scaled_value) > max_scale_factor:
+            st.warning("Value capped to avoid overflow.")
+            scaled_value = max_scale_factor if scaled_value > 0 else -max_scale_factor
+        normalized_values.append(int(scaled_value))
+    
     return normalized_values
 
 
 # Function to read and combine clock data while ignoring headers and special symbols
 
 def process_file(file, timestamp_col_index, value_col_index, data_type, data_scale, frequency):
+        
+    def read_file_with_encoding(encoding):
+        try:
+            file.seek(0)
+            content = StringIO(file.read().decode(encoding))
+            lines = content.readlines()
+            # st.write(f"Read {len(lines)} lines with encoding {encoding}")
+            return lines, None
+        except Exception as e:
+            return None, str(e)
 
-    # Convert uploaded file content directly to StringIO
-    file.seek(0)
-    content = StringIO(file.read().decode('utf-8'))
-   
-    lines = content.readlines()
+    # First, try reading the file with ASCII encoding
+    lines, error = read_file_with_encoding('ascii')
     
-    # Identify the first valid data row index
-    first_valid_index = next((idx for idx, line in enumerate(lines)
-                              if not line.lstrip().startswith(('#', '<', '"', '@')) and line.strip()), None)
+    # If ASCII reading fails, try UTF-8
+    if error:
+        st.warning(f"Failed to read file {file.name} with ASCII encoding: {error}. Trying UTF-8 encoding.")
+        lines, error = read_file_with_encoding('utf-8')
+    
+    # If UTF-8 reading also fails, report the error
+    if error:
+        st.error(f"Failed to read file {file.name} with both ASCII and UTF-8 encodings: {error}.")
+        return None
+    
+    # Clean the lines to remove unwanted characters and handle text formatting
+    cleaned_lines = []
+    for i, line in enumerate(lines):
+        line = line.strip()  # Remove leading/trailing whitespace
+        if line and not line.lstrip().startswith(('#', '<', '"', '@')):  # Skip comment lines and empty lines
+            cleaned_lines.append(line)
 
-    if first_valid_index is None:
+    if not cleaned_lines:
         st.error(f"No valid data found in file {file.name}.")
         return None  # Return None if no valid data is found
-   
-    # Read the file into a pandas DataFrame from the first valid index sep='\s+'
-    if timestamp_col_index != 'NA':
-       
-        try:
-            df = pd.read_csv(StringIO(''.join(lines[first_valid_index:])), sep='\s+',
-                            header=None, engine='python', usecols=[timestamp_col_index, value_col_index])# dtype={timestamp_col_index: str, value_col_index: float})
-            # st.write(df.head(10))  # Show the first few rows to verify structure
 
-            # # Format the DataFrame to display numbers in scientific notation
-            # df_styled = df.style.format({value_col_index: "{:.2e}"})
-            
-            # # Display the DataFrame using Streamlit
-            # st.write(df_styled)
-      
-        except Exception as e:
-                st.error("Failed to read time stamp data from the assigned column ")
-                return None
-    else:  # If the time stamp is NA 
-        
-        try:
-            df = pd.read_csv(StringIO(''.join(lines[first_valid_index:])), sep='\s+',
-                            header=None, engine='python', usecols=[value_col_index])
-            
+    first_valid_index = 0  # We now have cleaned lines
+    # st.write(f"First valid index: {first_valid_index}, Total cleaned lines: {len(cleaned_lines)}")
+
+    # Read the file into a pandas DataFrame from the cleaned lines
+    try:
+        if timestamp_col_index != 'NA':
+            df = pd.read_csv(StringIO('\n'.join(cleaned_lines[first_valid_index:])), sep='\s+',
+                             header=None, engine='python', usecols=[timestamp_col_index, value_col_index])
+        else:  # If the timestamp is NA
+            df = pd.read_csv(StringIO('\n'.join(cleaned_lines[first_valid_index:])), sep='\s+',
+                             header=None, engine='python', usecols=[value_col_index])
+
             # Generate the timestamp values starting from 1 to the length of the values column
             df['Timestamp'] = range(1, len(df) + 1)
-         
-            # Reorder columns to place 'Timestamp' first
-            df = df[['Timestamp', value_col_index]]
-            
-            # st.write(df.head(10))  # Show the first few rows to verify structure
-        except Exception as e:
-                st.error("Failed to read the measurements from the assigned DATA column, maybe Check the Data column number properly.")
-                return None       
+            df = df[['Timestamp', value_col_index]]  # Reorder columns to place 'Timestamp' first
+
+    except Exception as e:
+        st.error(f"Failed to read data from the assigned columns in file {file.name}. Error: {str(e)}")
+        return None       
 
     if df.empty:
         st.error(f"The file {file.name} does not have enough columns based on the selected indices.")
         return None  # Return None if the DataFrame is empty
 
-    if len(df.columns) != 2:# and timestamp_col_index != 'NA':
+    if len(df.columns) != 2:
         st.error(f"Timestamp and value columns cannot be the same. Please select different columns.")
         return None  # Return None if column count mismatch
 
     # Assign column names based on user input
     if timestamp_col_index != 'NA':
-        column_names = [None, None]  # Initialize list for column names
-        column_names[0] = 'Timestamp' if timestamp_col_index < value_col_index else 'Value'
-        column_names[1] = 'Value' if timestamp_col_index < value_col_index else 'Timestamp'
+        column_names = ['Timestamp', 'Value'] if timestamp_col_index < value_col_index else ['Value', 'Timestamp']
     else:
         column_names = ['Timestamp', 'Value']
-        
-        # column_names = [None]  # Initialize list for column names
-        # column_names[0] = 'Timestamp' if timestamp_col_index < value_col_index else 'Value'
-        # column_names[0] = 'Value' #if timestamp_col_index < value_col_index else 'Timestamp'
-
-    df.columns = column_names  # Assign correct names based on user selection
-    # st.write(df)
-    # st.write(df['Timestamp'])
-    # Convert 'Timestamp' column to integers if necessary
-    if 'Timestamp' in df.columns:
-        # df['Timestamp'] = df['Timestamp'].apply(lambda x: int(str(x).replace(',', '')))
-        df['Timestamp'] = df['Timestamp'].apply(lambda x: int(float(str(x).replace(',', ''))))
-        # st.write("Timestamp column after conversion:")
-        # st.write(df['Timestamp'].head(10).apply(lambda x: f"{x}"))  # Display the first few timestamps for debugging without commas
-  
-    # Validate columns
-    if timestamp_col_index != 'NA':
-        # st.write("Timestamp column:")
-        # st.write(df['Timestamp'].head(10))  # Display the first few timestamps for debugging
-        # st.write(df['Timestamp'])
-        if not validate_timestamp_column(df['Timestamp']):
-            st.error(f"Invalid timestamp data in selected column {timestamp_col_index } in file {file.name}. Try to choose Timestamp column as NA assuming your data is continious.")
-            return None  # Return None if validation fails
     
-    # st.write(df['Value'])
+    df.columns = column_names  # Assign correct names based on user selection
+
+    # Convert 'Timestamp' column to integers and 'Value' column to floats
+    if 'Timestamp' in df.columns:
+        df['Timestamp'] = df['Timestamp'].apply(lambda x: int(float(str(x).replace(',', ''))))
+
+    df['Value'] = df['Value'].apply(lambda x: float(str(x).replace(',', '').replace(' ', '')))  # Convert to float
+    
+    # Validate columns
+    if timestamp_col_index != 'NA' and not validate_timestamp_column(df['Timestamp']):
+        st.error(f"Invalid timestamp data in selected column {timestamp_col_index} in file {file.name}. Try to choose Timestamp column as NA assuming your data is continuous.")
+        return None  # Return None if validation fails
+
     if not validate_value_column(df['Value']):
         st.error(f"Invalid value data in file {file.name}.")
         return None  # Return None if validation fails
-    
-    # if data_type == 'Time Data':
-    #     if data_scale = 
 
-
-    # else: # Data id of Frequency Data
-    #     if frequency: # if its 5 or 10 or 100 MHz
-
-
-    #     if data_scale
-
-    # Format the DataFrame to display numbers in scientific notation
-    # df_styled = df.style.format({value_col_index: "{:.2e}"})
-    # st.write(df_styled)
-    # st.write(df)
-    return df # Return the processed DataFrame if everything is fine
-
+    # st.write("Successfully processed file")
+    # st.write(df.head())  # Display the first few rows of the DataFrame for review
+    return df  # Return the processed DataFrame if everything is fine
 
 # Function to check for column consistency
 def check_column_consistency(file):
@@ -394,6 +399,10 @@ def process_inputs(files):
                             st.session_state.data_type, st.session_state.order_of_data, st.session_state.freq_scale)
             
             if df is not None:
+
+                # st.write("Initial DataFrame after processing:")
+                # st.write(df.head())
+
                 # Check if all values in 'Value' column are None or empty strings
                 if df['Value'].apply(lambda x: x is None or x == '').all():
                     st.warning(f"The data in the file {file.name} has None values")
@@ -403,13 +412,19 @@ def process_inputs(files):
                 if not df['Value'].isnull().all():
                 
                     df.iloc[:, 1] = df.iloc[:, 1].apply(convert_to_nanoseconds, args=(st.session_state.order_of_data, st.session_state.freq_scale))
-         
+                    # st.write("DataFrame after converting values to nanoseconds:")
+                    # st.write(df.head())
+
+                else:
+                    st.warning(f"Skipping conversion to nanoseconds for file {file.name} due to all NaN values.")
+
+
                 file_key = file.name.split('.')[0]  # Using file name without extension as the key
 
                 data_frames[file_key] = df
     
-    
-    
+                # st.write(f"DataFrames now contains keys: {list(data_frames.keys())}")
+    # st.write(data_frames)
     return data_frames
     
 
@@ -1989,6 +2004,7 @@ def main():
 
                         # Process each file as a different clock
                         for idx, (name, df) in enumerate(st.session_state.total_data.items()):
+                            
                             if 'Value' in df.columns:
                                 clk_data = df['Value'].iloc[:1000].tolist() if len(df['Value']) > 1000 else df['Value'].tolist()
                                 clk_data = normalize_values(clk_data)  # Normalize values here
@@ -2007,7 +2023,7 @@ def main():
                             "Sample_data": sample_data,
                             "Choose Clock": choose_clock  # Checkbox column data
                         }).astype({"Choose Clock": "bool"})
-
+                        
                     
                     # Initialize checkbox states (optional, you might handle this in data processing)
                     if 'checkbox_states' not in st.session_state:
@@ -3134,8 +3150,8 @@ def main():
         if st.session_state.selected == "Stability": 
             if 'clk_sel' in st.session_state and st.session_state.clk_sel:
                  
-                selected_clock_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
-
+                selected_clk_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
+                st.write(f"selected clock name: {selected_clk_names}")
                 st.markdown("""
                     <div style='text-align: center;'>
                         <h3>Stability Analysis</h3>
@@ -3148,8 +3164,8 @@ def main():
                 # Default selections if not set in session state
                 if 'analysis_selection' not in st.session_state:
                     st.session_state.analysis_selection = ["ADEV"]
-                if 'selected_clocks' not in st.session_state:
-                    st.session_state.selected_clocks = [selected_clock_names[0]] if selected_clock_names else []
+                if 'selected_clks' not in st.session_state:
+                    st.session_state.selected_clks = [selected_clk_names[0]] if selected_clk_names else []
 
                 with col1:
                     # st.markdown("#### Select Stability Analysis Type")
@@ -3160,16 +3176,17 @@ def main():
 
                 with col2:
                     # st.markdown("#### Select Clocks:")
-                    selected_clocks = st.multiselect("Choose clocks:", selected_clock_names, default=st.session_state.selected_clocks)
+                    clk_list = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
+                    selected_clocks = st.multiselect("Choose clocks:", selected_clk_names, default=clk_list)
                     # Store the selection in session state
-                    st.session_state.selected_clocks = selected_clocks
+                    st.session_state.selected_clks = selected_clocks
 
                 plot_data = {}
                 csv_data_dict = {}
                 colors = ['orange', 'blue', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
                 markers = ['o', '*', 's', 'D', '^', 'v', '<', '>', 'P', 'X']
 
-                for clock in selected_clocks:
+                for clock in st.session_state.selected_clks:
                     clock_name = clock
 
                     # Get the latest data for the selected clock up to the stability tab
@@ -3182,7 +3199,7 @@ def main():
                     csv_data_dict[clock_name] = clock_data.copy()
                     csv_data_dict[clock_name]['Value'] *= 1E-9
 
-                for analysis_type in analysis_selection:
+                for analysis_type in st.session_state.analysis_selection:
                     plt.figure(figsize=(10, 4))
                     all_tau_values = []
                     all_dev_values = []
@@ -3233,11 +3250,11 @@ def main():
 
                     # Prepare CSV data with header information
                     csv_header = f"# Stability Analysis: {analysis_type}\n"
-                    for clock in selected_clocks:
+                    for clock in st.session_state.selected_clks:
                         start_range = st.session_state.clock_ranges.get(clock, {}).get('start_range', 'N/A')
                         end_range = st.session_state.clock_ranges.get(clock, {}).get('end_range', 'N/A')
                         csv_header += f"# Clock: {clock}, Start Range: {start_range}, End Range: {end_range}\n"
-                    csv_header += "# Tau (s)," + ",".join([f"{clock}" for clock in selected_clocks]) + "\n"
+                    csv_header += "# Tau (s)," + ",".join([f"{clock}" for clock in st.session_state.selected_clks]) + "\n"
 
                     # Create a final DataFrame where the 'Tau (s)' column is filled correctly
                     final_rows = []
@@ -3256,11 +3273,14 @@ def main():
                         final_rows.append(row_data)
 
                     # Flatten the column headers for the final DataFrame
-                    columns = ['Tau (s)'] + [f"{clock}" for clock in selected_clocks]
+                    columns = ['Tau (s)'] + [f"{clock}" for clock in st.session_state.selected_clks]
 
                     # Create the final DataFrame
                     final_df = pd.DataFrame(final_rows, columns=columns)
 
+                    
+                    # Drop rows with NaN or inf values in 'Tau (s)' before conversion
+                    final_df = final_df[final_df['Tau (s)'].notnull() & ~final_df['Tau (s)'].isin([float('inf'), float('-inf')])]
                     # Convert 'Tau (s)' column to integers
                     final_df['Tau (s)'] = final_df['Tau (s)'].astype(int)
 
