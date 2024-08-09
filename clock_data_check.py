@@ -3155,7 +3155,7 @@ def main():
                 st.markdown("""
                     <div style='text-align: center;'>
                         <h3>Stability Analysis</h3>
-                        <p><em>[Courtesy: Allan Tools (Note: Computes stability for continiuous data only)]</em></p>
+                        <p><em>[Courtesy: Allan Tools (Note: Computes stability for equally spaced data only)]</em></p>
                     </div>
                     """, unsafe_allow_html=True)
                 
