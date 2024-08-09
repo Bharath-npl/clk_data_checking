@@ -3151,7 +3151,7 @@ def main():
             if 'clk_sel' in st.session_state and st.session_state.clk_sel:
                  
                 selected_clk_names = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]["Clock Name"].tolist()
-                st.write(f"selected clock name: {selected_clk_names}")
+                
                 st.markdown("""
                     <div style='text-align: center;'>
                         <h3>Stability Analysis</h3>
