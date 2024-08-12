@@ -2970,7 +2970,7 @@ def main():
                         timestamps = filtered_data['Timestamp']
                         data_to_plot = filtered_data['Value']
 
-                        reset_button = st.button(":yellow-background[**Reset Outlier Removal**]", key=f"reset_outliers_{selected_clock}")
+                        reset_button = st.button("**Reset Outlier Removal**", key=f"reset_outliers_{selected_clock}")
                         if reset_button:
                             st.session_state[f'outlier_data_{selected_clock}'] = clock_data.copy()
                             filtered_data_updated = clock_data.copy()
