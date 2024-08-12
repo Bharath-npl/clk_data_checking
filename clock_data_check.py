@@ -24,6 +24,9 @@ from PIL import Image
 import json
 from streamlit_plotly_events import plotly_events
 import math
+import scipy.stats  # used in confidence_intervals()
+
+
 
 st.set_page_config(page_title="Clock Data Checking", page_icon=":stopwatch:", layout="wide")
 st.markdown('<style>div.block-container{padding-top:1rem;}</style>', unsafe_allow_html=True)
@@ -1647,7 +1650,8 @@ def adev(data, rate, data_type, taus=None):
 
 
 
-def oadev(data, rate=1.0, data_type="phase", taus=None):
+# This function is not gap resistant. 
+def gap_oadev(data, rate=1.0, data_type="phase", taus=None):
     """ Overlapping Allan deviation.
     General purpose - most widely used - first choice.
 
@@ -1700,6 +1704,247 @@ def oadev(data, rate=1.0, data_type="phase", taus=None):
         (ad[idx], ade[idx], adn[idx]) = calc_adev_phase(phase, rate, mj, 1)
 
     return remove_small_ns(taus_used, ad, ade, adn)
+
+
+
+def edf_simple(N, m, alpha):
+    """Equivalent degrees of freedom.
+    Simple approximate formulae.
+
+    Parameters
+    ----------
+    N : int
+        the number of phase samples
+    m : int
+        averaging factor, tau = m * tau0
+    alpha: int
+        exponent of f for the frequency PSD:
+        'wp' returns white phase noise.             alpha=+2
+        'wf' returns white frequency noise.         alpha= 0
+        'fp' returns flicker phase noise.           alpha=+1
+        'ff' returns flicker frequency noise.       alpha=-1
+        'rf' returns random walk frequency noise.   alpha=-2
+        If the input is not recognized, it defaults to idealized, uncorrelated
+        noise with (N-1) degrees of freedom.
+
+    Notes
+    -----
+       See [Stein1985]_
+
+    Returns
+    -------
+    edf : float
+        Equivalent degrees of freedom
+
+    """
+
+    N = float(N)
+    m = float(m)
+    if alpha in [2, 1, 0, -1, -2]:
+        # NIST SP 1065, Table 5
+        if alpha == +2:
+            edf = (N + 1) * (N - 2*m) / (2 * (N - m))
+
+        if alpha == 0:
+            edf = (((3 * (N - 1) / (2 * m)) - (2 * (N - 2) / N)) *
+                   ((4*pow(m, 2)) / ((4*pow(m, 2)) + 5)))
+
+        if alpha == 1:
+            a = (N - 1)/(2 * m)
+            b = (2 * m + 1) * (N - 1) / 4
+            edf = np.exp(np.sqrt(np.log(a) * np.log(b)))
+
+        if alpha == -1:
+            if m == 1:
+                edf = 2 * (N - 2)/(2.3 * N - 4.9)
+            if m >= 2:
+                edf = 5 * N**2 / (4 * m * (N + (3 * m)))
+
+        if alpha == -2:
+            a = (N - 2) / (m * (N - 3)**2)
+            b = (N - 1)**2
+            c = 3 * m * (N - 1)
+            d = 4 * m**2
+            edf = a * (b - c + d)
+
+    else:
+        edf = (N - 1)
+        print("Noise type not recognized."
+              " Defaulting to N - 1 degrees of freedom.")
+
+    return edf
+
+
+#######################
+# Confidence Intervals
+ONE_SIGMA_CI = scipy.special.erf(1/np.sqrt(2))
+#    = 0.68268949213708585
+
+
+def confidence_interval(dev, edf, ci=ONE_SIGMA_CI):
+    """ returns confidence interval (dev_min, dev_max)
+        for a given deviation dev, equivalent degrees of freedom edf,
+        and degree of confidence ci.
+
+    Parameters
+    ----------
+    dev: float
+        Mean value (e.g. adev) around which we produce the confidence interval
+    edf: float
+        Equivalent degrees of freedon
+    ci: float, defaults to scipy.special.erf(1/math.sqrt(2))
+        for 1-sigma standard error set
+        ci = scipy.special.erf(1/math.sqrt(2))
+            = 0.68268949213708585
+
+    Returns
+    -------
+    (dev_min, dev_max): (float, float)
+        Confidence interval
+    """
+    ci_l = min(np.abs(ci), np.abs((ci-1))) / 2
+    ci_h = 1 - ci_l
+
+    # function from scipy, works OK, but scipy is large and slow to build
+    chi2_l = scipy.stats.chi2.ppf(ci_l, edf)
+    chi2_h = scipy.stats.chi2.ppf(ci_h, edf)
+
+    variance = dev*dev
+    var_l = float(edf) * variance / chi2_h  # NIST SP1065 eqn (45)
+    var_h = float(edf) * variance / chi2_l
+    return (np.sqrt(var_l), np.sqrt(var_h))
+
+
+
+def calc_gradev_phase(data, rate, mj, stride, confidence, noisetype):
+    """ see http://www.leapsecond.com/tools/adev_lib.c
+        stride = mj for nonoverlapping allan deviation
+        stride = 1 for overlapping allan deviation
+
+        see http://en.wikipedia.org/wiki/Allan_variance
+             1       1
+         s2y(t) = --------- sum [x(i+2) - 2x(i+1) + x(i) ]^2
+                  2*tau^2
+
+
+        ci: float, defaults to scipy.special.erf(1/math.sqrt(2))
+        for 1-sigma standard error set
+        ci = scipy.special.erf(1/math.sqrt(2))
+            = 0.68268949213708585
+
+    """
+
+    d2 = data[2 * int(mj)::int(stride)]
+    d1 = data[1 * int(mj)::int(stride)]
+    d0 = data[::int(stride)]
+
+    n = min(len(d0), len(d1), len(d2))
+
+    v_arr = d2[:n] - 2 * d1[:n] + d0[:n]
+
+    # only average for non-nans
+    n = len(np.where(np.isnan(v_arr) == False)[0])  # noqa
+
+    if n == 0:
+        RuntimeWarning("Data array length is too small: %i" % len(data))
+        n = 1
+
+    N = len(np.where(np.isnan(data) == False)[0])  # noqa
+
+    # a summation robust to nans
+    s = np.nansum(v_arr * v_arr)
+
+    dev = np.sqrt(s / (2.0 * n)) / mj * rate
+    # deverr = dev / np.sqrt(n) # old simple errorbars
+    if noisetype == 'wp':
+        alpha = 2
+    elif noisetype == 'wf':
+        alpha = 0
+    elif noisetype == 'fp':
+        alpha = -2
+    else:
+        alpha = None
+
+    if n > 1:
+        edf = edf_simple(N, mj, alpha)
+        deverr = confidence_interval(dev, confidence, edf)
+    else:
+        deverr = [0, 0]
+
+    return dev, deverr, n
+
+
+# Gap resistant overlapping Allan deviation 
+
+def oadev(data, rate=1.0, data_type="phase", taus=None, ci=0.9, noisetype='wp'):
+    """ Gap resistant overlapping Allan deviation
+
+    Parameters
+    ----------
+    data: np.array
+        Input data. Provide either phase or frequency (fractional,
+        adimensional). Warning : phase data works better (frequency data is
+        first trantformed into phase using numpy.cumsum() function, which can
+        lead to poor results).
+    rate: float
+        The sampling rate for data, in Hz. Defaults to 1.0
+    data_type: {'phase', 'freq'}
+        Data type, i.e. phase or frequency. Defaults to "phase".
+    taus: np.array
+        Array of tau values, in seconds, for which to compute statistic.
+        Optionally set taus=["all"|"octave"|"decade"] for automatic
+        tau-list generation.
+    ci: float
+        the total confidence interval desired, i.e. if ci = 0.9, the bounds
+        will be at 0.05 and 0.95.
+    noisetype: string
+        the type of noise desired:
+        'wp' returns white phase noise.
+        'wf' returns white frequency noise.
+        'fp' returns flicker phase noise.
+        'ff' returns flicker frequency noise.
+        'rf' returns random walk frequency noise.
+        If the input is not recognized, it defaults to idealized, uncorrelated
+        noise with (N-1) degrees of freedom.
+
+    Returns
+    -------
+    taus: np.array
+        list of tau vales in seconds
+    adev: np.array
+        deviations
+    [err_l, err_h] : list of len()==2, np.array
+        the upper and lower bounds of the confidence interval taken as
+        distances from the the estimated two sample variance.
+    ns: np.array
+        numper of terms n in the adev estimate.
+
+    """
+    if data_type == "freq":
+        print("Warning : phase data is preferred as input to gradev()")
+    phase = input_to_phase(data, rate, data_type)
+    (data, m, taus_used) = tau_generator(phase, rate, "oadev", taus)
+
+    ad = np.zeros_like(taus_used)
+    ade_l = np.zeros_like(taus_used)
+    ade_h = np.zeros_like(taus_used)
+    adn = np.zeros_like(taus_used)
+
+    for idx, mj in enumerate(m):
+        (dev, deverr, n) = calc_gradev_phase(data,
+                                             rate,
+                                             mj,
+                                             1,
+                                             ci,
+                                             noisetype)
+        # stride=1 for overlapping ADEV
+        ad[idx] = dev
+        ade_l[idx] = deverr[0]
+        ade_h[idx] = deverr[1]
+        adn[idx] = n
+
+    # Note that errors are split in 2 arrays
+    return remove_small_ns(taus_used, ad, [ade_l, ade_h], adn)
 
 
 
