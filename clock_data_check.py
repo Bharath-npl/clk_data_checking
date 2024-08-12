@@ -2965,12 +2965,14 @@ def main():
                         update_action(selected_clock, 'Outlier Filtered', f"Method: {selected_outlier}, Std Dev: {std_threshold}")
 
                     elif selected_outlier == 'Remove Selected Outliers':
-                        filtered_data = st.session_state[f'outlier_data_{selected_clock}']
+                        filtered_data = st.session_state.get(f'outlier_data_{selected_clock}', clock_data.copy())
+                        # filtered_data = st.session_state[f'outlier_data_{selected_clock}']
                         st.markdown(":violet-background[**Zoom-in to the outlier and select it/them using a Box or Lasso selection**]")
+                        reset_button = st.button("**Reset Outlier Removal**", key=f"reset_outliers_{selected_clock}")
                         timestamps = filtered_data['Timestamp']
                         data_to_plot = filtered_data['Value']
-
-                        reset_button = st.button("**Reset Outlier Removal**", key=f"reset_outliers_{selected_clock}")
+                        plot_placeholder = st.empty()  # Placeholder for the plot                        
+                        
                         if reset_button:
                             st.session_state[f'outlier_data_{selected_clock}'] = clock_data.copy()
                             filtered_data_updated = clock_data.copy()
@@ -2982,12 +2984,11 @@ def main():
                             event_data = st.plotly_chart(fig, key=f"outlier_{selected_clock}", on_select="rerun", selection_mode=('points', 'box', 'lasso'),theme="streamlit")
                             # st.plotly_chart(fig, use_container_width=True)
                         else:
-                            # filtered_data_updated = clock_data.copy()
-                            # timestamps = filtered_data_updated['Timestamp']
-                            # data_to_plot = filtered_data_updated['Value']
+                            
+                            
                             fig_selection = create_plots(timestamps, data_to_plot)
-                            event_data = st.plotly_chart(fig_selection, key=f"outlier_{selected_clock}", on_select="rerun", selection_mode=('points', 'box', 'lasso'),theme="streamlit")
-
+                            event_data = plot_placeholder.plotly_chart(fig_selection, key=f"outlier_{selected_clock}", on_select="rerun", selection_mode=('points', 'box', 'lasso'),theme="streamlit")
+                            
                             if event_data and event_data.selection:
                                 selected_points = event_data.selection.get("points", [])
 
@@ -2999,11 +3000,15 @@ def main():
                                     filtered_data_updated = filtered_data_updated.drop(index=filtered_data_updated.index[selected_points_indices])
                                     st.session_state[f'outlier_data_{selected_clock}'] = filtered_data_updated
                                     st.success(f"Removed {len(selected_points)} outliers from {selected_clock}")
-
+                                    
+                                    # Update the plot after outlier removal
                                     timestamps = filtered_data_updated['Timestamp']
                                     data_to_plot = filtered_data_updated['Value']
+                                    
+                                    st.empty()  # Clear the previous plot
+                                 
                                     fig_updated = create_plots(timestamps, data_to_plot)
-                                    st.plotly_chart(fig_updated, use_container_width=True)
+                                    plot_placeholder.plotly_chart(fig_updated, use_container_width=True)
 
                         update_action(selected_clock, 'Outlier Filtered', f"Method: {selected_outlier}")
 
