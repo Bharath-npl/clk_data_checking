@@ -2041,7 +2041,7 @@ def main():
 
                 if st.session_state.data_type == 'Fractional Frequency':
                     st.session_state.freq_scale = st.select_slider("**Select the frequency of the signal (MHz)**",
-                                                options=[0, 5, 10, 100],
+                                                options=[5, 10, 100],
                                                 help="Select the base frequency scale in MHz.")
                     st.session_state.order_of_data = 'Unitless'
                     st.session_state.input_data.update({
