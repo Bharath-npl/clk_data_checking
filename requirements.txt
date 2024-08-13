@@ -5,4 +5,3 @@ streamlit
 plotly
 streamlit-option-menu==0.3.12
 streamlit-plotly-events
-scipy
