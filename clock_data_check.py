@@ -23,8 +23,8 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import json
 from streamlit_plotly_events import plotly_events
-import math
-import scipy.stats  # used in confidence_intervals()
+# import math
+# import scipy.stats  # used in confidence_intervals()
 
 
 
@@ -286,7 +286,9 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
                              header=None, engine='python', usecols=[value_col_index])
 
             # Generate the timestamp values starting from 1 to the length of the values column
-            df['Timestamp'] = range(1, len(df) + 1)
+            # df['Timestamp'] = range(1, len(df) + 1)
+            # Generate the timestamp values starting from 0 with the specified measurement interval
+            df['Timestamp'] = [i * st.session_state.tau0 for i in range(len(df))]
             df = df[['Timestamp', value_col_index]]  # Reorder columns to place 'Timestamp' first
 
     except Exception as e:
@@ -314,6 +316,9 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
         df['Timestamp'] = df['Timestamp'].apply(lambda x: int(float(str(x).replace(',', ''))))
 
     df['Value'] = df['Value'].apply(lambda x: float(str(x).replace(',', '').replace(' ', '')))  # Convert to float
+
+    # if timestamp_col_index == 'NA':
+    #     df['Value'] = df['Value']*st.session_state.tau0 # If there is no time stamp the 
     
     # Validate columns
     if timestamp_col_index != 'NA' and not validate_timestamp_column(df['Timestamp']):
@@ -362,7 +367,8 @@ def process_inputs(files):
         return data_frames
     
     if st.session_state.timestamp_col != 'NA':
-        st.session_state.timestamp_col = st.session_state.timestamp_col -1
+        # st.session_state.timestamp_col = st.session_state.timestamp_col -1
+        st.session_state.timestamp_col = 0
     
    
     # Process files based on the type of file combination selected
@@ -1003,10 +1009,10 @@ def create_plots(timestamps, data):
     tau0 = st.session_state.input_data['tau0']
     y_axis_title = "Days" if tau0 >= 86400 else "Seconds"
     fig.update_yaxes(title_text=y_axis_title, row=2, col=1)  # Set y-axis label for the subplot in row 2, col 1
-
+    
     fig.update_layout(
         title="Clock Data",
-        xaxis_title="MJD",
+        xaxis_title=st.session_state.x_title,
         yaxis_title=st.session_state.y_title,
         yaxis=dict(tickmode='auto', nticks=10),
         showlegend=False,
@@ -1651,7 +1657,7 @@ def adev(data, rate, data_type, taus=None):
 
 
 # This function is not gap resistant. 
-def gap_oadev(data, rate=1.0, data_type="phase", taus=None):
+def oadev(data, rate=1.0, data_type="phase", taus=None):
     """ Overlapping Allan deviation.
     General purpose - most widely used - first choice.
 
@@ -1707,245 +1713,244 @@ def gap_oadev(data, rate=1.0, data_type="phase", taus=None):
 
 
 
-def edf_simple(N, m, alpha):
-    """Equivalent degrees of freedom.
-    Simple approximate formulae.
+# def edf_simple(N, m, alpha):
+#     """Equivalent degrees of freedom.
+#     Simple approximate formulae.
 
-    Parameters
-    ----------
-    N : int
-        the number of phase samples
-    m : int
-        averaging factor, tau = m * tau0
-    alpha: int
-        exponent of f for the frequency PSD:
-        'wp' returns white phase noise.             alpha=+2
-        'wf' returns white frequency noise.         alpha= 0
-        'fp' returns flicker phase noise.           alpha=+1
-        'ff' returns flicker frequency noise.       alpha=-1
-        'rf' returns random walk frequency noise.   alpha=-2
-        If the input is not recognized, it defaults to idealized, uncorrelated
-        noise with (N-1) degrees of freedom.
+#     Parameters
+#     ----------
+#     N : int
+#         the number of phase samples
+#     m : int
+#         averaging factor, tau = m * tau0
+#     alpha: int
+#         exponent of f for the frequency PSD:
+#         'wp' returns white phase noise.             alpha=+2
+#         'wf' returns white frequency noise.         alpha= 0
+#         'fp' returns flicker phase noise.           alpha=+1
+#         'ff' returns flicker frequency noise.       alpha=-1
+#         'rf' returns random walk frequency noise.   alpha=-2
+#         If the input is not recognized, it defaults to idealized, uncorrelated
+#         noise with (N-1) degrees of freedom.
 
-    Notes
-    -----
-       See [Stein1985]_
+#     Notes
+#     -----
+#        See [Stein1985]_
 
-    Returns
-    -------
-    edf : float
-        Equivalent degrees of freedom
+#     Returns
+#     -------
+#     edf : float
+#         Equivalent degrees of freedom
 
-    """
+#     """
 
-    N = float(N)
-    m = float(m)
-    if alpha in [2, 1, 0, -1, -2]:
-        # NIST SP 1065, Table 5
-        if alpha == +2:
-            edf = (N + 1) * (N - 2*m) / (2 * (N - m))
+#     N = float(N)
+#     m = float(m)
+#     if alpha in [2, 1, 0, -1, -2]:
+#         # NIST SP 1065, Table 5
+#         if alpha == +2:
+#             edf = (N + 1) * (N - 2*m) / (2 * (N - m))
 
-        if alpha == 0:
-            edf = (((3 * (N - 1) / (2 * m)) - (2 * (N - 2) / N)) *
-                   ((4*pow(m, 2)) / ((4*pow(m, 2)) + 5)))
+#         if alpha == 0:
+#             edf = (((3 * (N - 1) / (2 * m)) - (2 * (N - 2) / N)) *
+#                    ((4*pow(m, 2)) / ((4*pow(m, 2)) + 5)))
 
-        if alpha == 1:
-            a = (N - 1)/(2 * m)
-            b = (2 * m + 1) * (N - 1) / 4
-            edf = np.exp(np.sqrt(np.log(a) * np.log(b)))
+#         if alpha == 1:
+#             a = (N - 1)/(2 * m)
+#             b = (2 * m + 1) * (N - 1) / 4
+#             edf = np.exp(np.sqrt(np.log(a) * np.log(b)))
 
-        if alpha == -1:
-            if m == 1:
-                edf = 2 * (N - 2)/(2.3 * N - 4.9)
-            if m >= 2:
-                edf = 5 * N**2 / (4 * m * (N + (3 * m)))
+#         if alpha == -1:
+#             if m == 1:
+#                 edf = 2 * (N - 2)/(2.3 * N - 4.9)
+#             if m >= 2:
+#                 edf = 5 * N**2 / (4 * m * (N + (3 * m)))
 
-        if alpha == -2:
-            a = (N - 2) / (m * (N - 3)**2)
-            b = (N - 1)**2
-            c = 3 * m * (N - 1)
-            d = 4 * m**2
-            edf = a * (b - c + d)
+#         if alpha == -2:
+#             a = (N - 2) / (m * (N - 3)**2)
+#             b = (N - 1)**2
+#             c = 3 * m * (N - 1)
+#             d = 4 * m**2
+#             edf = a * (b - c + d)
 
-    else:
-        edf = (N - 1)
-        print("Noise type not recognized."
-              " Defaulting to N - 1 degrees of freedom.")
+#     else:
+#         edf = (N - 1)
+#         print("Noise type not recognized."
+#               " Defaulting to N - 1 degrees of freedom.")
 
-    return edf
-
-
-#######################
-# Confidence Intervals
-ONE_SIGMA_CI = scipy.special.erf(1/np.sqrt(2))
-#    = 0.68268949213708585
+#     return edf
 
 
-def confidence_interval(dev, edf, ci=ONE_SIGMA_CI):
-    """ returns confidence interval (dev_min, dev_max)
-        for a given deviation dev, equivalent degrees of freedom edf,
-        and degree of confidence ci.
-
-    Parameters
-    ----------
-    dev: float
-        Mean value (e.g. adev) around which we produce the confidence interval
-    edf: float
-        Equivalent degrees of freedon
-    ci: float, defaults to scipy.special.erf(1/math.sqrt(2))
-        for 1-sigma standard error set
-        ci = scipy.special.erf(1/math.sqrt(2))
-            = 0.68268949213708585
-
-    Returns
-    -------
-    (dev_min, dev_max): (float, float)
-        Confidence interval
-    """
-    ci_l = min(np.abs(ci), np.abs((ci-1))) / 2
-    ci_h = 1 - ci_l
-
-    # function from scipy, works OK, but scipy is large and slow to build
-    chi2_l = scipy.stats.chi2.ppf(ci_l, edf)
-    chi2_h = scipy.stats.chi2.ppf(ci_h, edf)
-
-    variance = dev*dev
-    var_l = float(edf) * variance / chi2_h  # NIST SP1065 eqn (45)
-    var_h = float(edf) * variance / chi2_l
-    return (np.sqrt(var_l), np.sqrt(var_h))
+# #######################
+# # Confidence Intervals
+# ONE_SIGMA_CI = scipy.special.erf(1/np.sqrt(2))
+# #    = 0.68268949213708585
 
 
+# def confidence_interval(dev, edf, ci=ONE_SIGMA_CI):
+#     """ returns confidence interval (dev_min, dev_max)
+#         for a given deviation dev, equivalent degrees of freedom edf,
+#         and degree of confidence ci.
 
-def calc_gradev_phase(data, rate, mj, stride, confidence, noisetype):
-    """ see http://www.leapsecond.com/tools/adev_lib.c
-        stride = mj for nonoverlapping allan deviation
-        stride = 1 for overlapping allan deviation
+#     Parameters
+#     ----------
+#     dev: float
+#         Mean value (e.g. adev) around which we produce the confidence interval
+#     edf: float
+#         Equivalent degrees of freedon
+#     ci: float, defaults to scipy.special.erf(1/math.sqrt(2))
+#         for 1-sigma standard error set
+#         ci = scipy.special.erf(1/math.sqrt(2))
+#             = 0.68268949213708585
 
-        see http://en.wikipedia.org/wiki/Allan_variance
-             1       1
-         s2y(t) = --------- sum [x(i+2) - 2x(i+1) + x(i) ]^2
-                  2*tau^2
+#     Returns
+#     -------
+#     (dev_min, dev_max): (float, float)
+#         Confidence interval
+#     """
+#     ci_l = min(np.abs(ci), np.abs((ci-1))) / 2
+#     ci_h = 1 - ci_l
 
+#     # function from scipy, works OK, but scipy is large and slow to build
+#     chi2_l = scipy.stats.chi2.ppf(ci_l, edf)
+#     chi2_h = scipy.stats.chi2.ppf(ci_h, edf)
 
-        ci: float, defaults to scipy.special.erf(1/math.sqrt(2))
-        for 1-sigma standard error set
-        ci = scipy.special.erf(1/math.sqrt(2))
-            = 0.68268949213708585
-
-    """
-
-    d2 = data[2 * int(mj)::int(stride)]
-    d1 = data[1 * int(mj)::int(stride)]
-    d0 = data[::int(stride)]
-
-    n = min(len(d0), len(d1), len(d2))
-
-    v_arr = d2[:n] - 2 * d1[:n] + d0[:n]
-
-    # only average for non-nans
-    n = len(np.where(np.isnan(v_arr) == False)[0])  # noqa
-
-    if n == 0:
-        RuntimeWarning("Data array length is too small: %i" % len(data))
-        n = 1
-
-    N = len(np.where(np.isnan(data) == False)[0])  # noqa
-
-    # a summation robust to nans
-    s = np.nansum(v_arr * v_arr)
-
-    dev = np.sqrt(s / (2.0 * n)) / mj * rate
-    # deverr = dev / np.sqrt(n) # old simple errorbars
-    if noisetype == 'wp':
-        alpha = 2
-    elif noisetype == 'wf':
-        alpha = 0
-    elif noisetype == 'fp':
-        alpha = -2
-    else:
-        alpha = None
-
-    if n > 1:
-        edf = edf_simple(N, mj, alpha)
-        deverr = confidence_interval(dev, confidence, edf)
-    else:
-        deverr = [0, 0]
-
-    return dev, deverr, n
+#     variance = dev*dev
+#     var_l = float(edf) * variance / chi2_h  # NIST SP1065 eqn (45)
+#     var_h = float(edf) * variance / chi2_l
+#     return (np.sqrt(var_l), np.sqrt(var_h))
 
 
-# Gap resistant overlapping Allan deviation 
 
-def oadev(data, rate=1.0, data_type="phase", taus=None, ci=0.9, noisetype='wp'):
-    """ Gap resistant overlapping Allan deviation
+# def calc_gradev_phase(data, rate, mj, stride, confidence, noisetype):
+#     """ see http://www.leapsecond.com/tools/adev_lib.c
+#         stride = mj for nonoverlapping allan deviation
+#         stride = 1 for overlapping allan deviation
 
-    Parameters
-    ----------
-    data: np.array
-        Input data. Provide either phase or frequency (fractional,
-        adimensional). Warning : phase data works better (frequency data is
-        first trantformed into phase using numpy.cumsum() function, which can
-        lead to poor results).
-    rate: float
-        The sampling rate for data, in Hz. Defaults to 1.0
-    data_type: {'phase', 'freq'}
-        Data type, i.e. phase or frequency. Defaults to "phase".
-    taus: np.array
-        Array of tau values, in seconds, for which to compute statistic.
-        Optionally set taus=["all"|"octave"|"decade"] for automatic
-        tau-list generation.
-    ci: float
-        the total confidence interval desired, i.e. if ci = 0.9, the bounds
-        will be at 0.05 and 0.95.
-    noisetype: string
-        the type of noise desired:
-        'wp' returns white phase noise.
-        'wf' returns white frequency noise.
-        'fp' returns flicker phase noise.
-        'ff' returns flicker frequency noise.
-        'rf' returns random walk frequency noise.
-        If the input is not recognized, it defaults to idealized, uncorrelated
-        noise with (N-1) degrees of freedom.
+#         see http://en.wikipedia.org/wiki/Allan_variance
+#              1       1
+#          s2y(t) = --------- sum [x(i+2) - 2x(i+1) + x(i) ]^2
+#                   2*tau^2
 
-    Returns
-    -------
-    taus: np.array
-        list of tau vales in seconds
-    adev: np.array
-        deviations
-    [err_l, err_h] : list of len()==2, np.array
-        the upper and lower bounds of the confidence interval taken as
-        distances from the the estimated two sample variance.
-    ns: np.array
-        numper of terms n in the adev estimate.
 
-    """
-    if data_type == "freq":
-        print("Warning : phase data is preferred as input to gradev()")
-    phase = input_to_phase(data, rate, data_type)
-    (data, m, taus_used) = tau_generator(phase, rate, "oadev", taus)
+#         ci: float, defaults to scipy.special.erf(1/math.sqrt(2))
+#         for 1-sigma standard error set
+#         ci = scipy.special.erf(1/math.sqrt(2))
+#             = 0.68268949213708585
 
-    ad = np.zeros_like(taus_used)
-    ade_l = np.zeros_like(taus_used)
-    ade_h = np.zeros_like(taus_used)
-    adn = np.zeros_like(taus_used)
+#     """
 
-    for idx, mj in enumerate(m):
-        (dev, deverr, n) = calc_gradev_phase(data,
-                                             rate,
-                                             mj,
-                                             1,
-                                             ci,
-                                             noisetype)
-        # stride=1 for overlapping ADEV
-        ad[idx] = dev
-        ade_l[idx] = deverr[0]
-        ade_h[idx] = deverr[1]
-        adn[idx] = n
+#     d2 = data[2 * int(mj)::int(stride)]
+#     d1 = data[1 * int(mj)::int(stride)]
+#     d0 = data[::int(stride)]
 
-    # Note that errors are split in 2 arrays
-    return remove_small_ns(taus_used, ad, [ade_l, ade_h], adn)
+#     n = min(len(d0), len(d1), len(d2))
 
+#     v_arr = d2[:n] - 2 * d1[:n] + d0[:n]
+
+#     # only average for non-nans
+#     n = len(np.where(np.isnan(v_arr) == False)[0])  # noqa
+
+#     if n == 0:
+#         RuntimeWarning("Data array length is too small: %i" % len(data))
+#         n = 1
+
+#     N = len(np.where(np.isnan(data) == False)[0])  # noqa
+
+#     # a summation robust to nans
+#     s = np.nansum(v_arr * v_arr)
+
+#     dev = np.sqrt(s / (2.0 * n)) / mj * rate
+#     # deverr = dev / np.sqrt(n) # old simple errorbars
+#     if noisetype == 'wp':
+#         alpha = 2
+#     elif noisetype == 'wf':
+#         alpha = 0
+#     elif noisetype == 'fp':
+#         alpha = -2
+#     else:
+#         alpha = None
+
+#     if n > 1:
+#         edf = edf_simple(N, mj, alpha)
+#         deverr = confidence_interval(dev, confidence, edf)
+#     else:
+#         deverr = [0, 0]
+
+#     return dev, deverr, n
+
+
+# # Gap resistant overlapping Allan deviation 
+
+# def oadev(data, rate=1.0, data_type="phase", taus=None, ci=0.9, noisetype='wp'):
+#     """ Gap resistant overlapping Allan deviation
+
+#     Parameters
+#     ----------
+#     data: np.array
+#         Input data. Provide either phase or frequency (fractional,
+#         adimensional). Warning : phase data works better (frequency data is
+#         first trantformed into phase using numpy.cumsum() function, which can
+#         lead to poor results).
+#     rate: float
+#         The sampling rate for data, in Hz. Defaults to 1.0
+#     data_type: {'phase', 'freq'}
+#         Data type, i.e. phase or frequency. Defaults to "phase".
+#     taus: np.array
+#         Array of tau values, in seconds, for which to compute statistic.
+#         Optionally set taus=["all"|"octave"|"decade"] for automatic
+#         tau-list generation.
+#     ci: float
+#         the total confidence interval desired, i.e. if ci = 0.9, the bounds
+#         will be at 0.05 and 0.95.
+#     noisetype: string
+#         the type of noise desired:
+#         'wp' returns white phase noise.
+#         'wf' returns white frequency noise.
+#         'fp' returns flicker phase noise.
+#         'ff' returns flicker frequency noise.
+#         'rf' returns random walk frequency noise.
+#         If the input is not recognized, it defaults to idealized, uncorrelated
+#         noise with (N-1) degrees of freedom.
+
+#     Returns
+#     -------
+#     taus: np.array
+#         list of tau vales in seconds
+#     adev: np.array
+#         deviations
+#     [err_l, err_h] : list of len()==2, np.array
+#         the upper and lower bounds of the confidence interval taken as
+#         distances from the the estimated two sample variance.
+#     ns: np.array
+#         numper of terms n in the adev estimate.
+
+#     """
+#     if data_type == "freq":
+#         print("Warning : phase data is preferred as input to gradev()")
+#     phase = input_to_phase(data, rate, data_type)
+#     (data, m, taus_used) = tau_generator(phase, rate, "oadev", taus)
+
+#     ad = np.zeros_like(taus_used)
+#     ade_l = np.zeros_like(taus_used)
+#     ade_h = np.zeros_like(taus_used)
+#     adn = np.zeros_like(taus_used)
+
+#     for idx, mj in enumerate(m):
+#         (dev, deverr, n) = calc_gradev_phase(data,
+#                                              rate,
+#                                              mj,
+#                                              1,
+#                                              ci,
+#                                              noisetype)
+#         # stride=1 for overlapping ADEV
+#         ad[idx] = dev
+#         ade_l[idx] = deverr[0]
+#         ade_h[idx] = deverr[1]
+#         adn[idx] = n
+
+#     # Note that errors are split in 2 arrays
+#     return remove_small_ns(taus_used, ad, [ade_l, ade_h], adn)
 
 
 
@@ -1969,18 +1974,12 @@ def main():
 
     with container1:
 
-        # col1, col2, col3, col4, col5, col6 = st.columns(6)
-        # normal_width = (100 - 5.25) / 5  # Subtract 5.25% instead of 5 to balance the extra 5% for col5
-        # col5_width = normal_width + 5.25
-
-        # # Convert these into a list of proportions
-        # widths = [normal_width, normal_width, normal_width, normal_width, col5_width, normal_width]
         # Create 6 columns with equal width
         col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1.1, 1])  # Each number represents an equal share of the width
 
         # col1, col2, col3, col4, col5, col6 = st.columns(widths)
             # Data types available for selection
-        data_types = ['Phase/Time Data', 'Fractional Frequency']
+        data_types = ['Phase/Time Data (s)', 'Fractional Frequency']
         
         # First column for file upload inside a popover
         with col1:
@@ -2016,10 +2015,12 @@ def main():
                 data_types,
                 index=0 if st.session_state.data_type not in data_types else data_types.index(st.session_state.data_type))
             
-                if st.session_state.data_type == 'Phase/Time Data':
-                    st.session_state.order_of_data = st.selectbox("**Select the units of your data (s)**",
-                                            ('s','ns','ps','ms', 'µs'),
-                                            help="Choose the unit that best describes your data's time resolution.")
+                if st.session_state.data_type == 'Phase/Time Data (s)':
+                    # st.session_state.order_of_data = st.selectbox("**Select the units of your data (s)**",
+                    #                         ('s','ns','ps','ms', 'µs'),
+                    #                         help="Choose the unit that best describes your data's time resolution.")
+                    st.session_state.order_of_data = 's'
+                                            
                     st.session_state.freq_scale = 0 # If it time data, this is used just as a flag indicator
                     st.session_state.input_data.update({
                     'data_type': st.session_state.data_type,
@@ -2068,10 +2069,13 @@ def main():
                 
                 value_help_text = "Data should be numerical or exponential (e.g., 3.14, 2.17e-5)."
                 
-                st.session_state.timestamp_col = st.selectbox("**Select the TIMESTAMP column**", options=[1,'NA', 2, 3, 4, 5, 6, 7, 8, 9, 10], help=timestamp_help_text)
+                st.session_state.timestamp_col = st.selectbox("**Select the TIMESTAMP in column 1**", options=['MJD','NA'], help=timestamp_help_text)
                 st.session_state.data_col = st.selectbox("**Select the DATA column**", options=[2, 3, 1, 4, 5, 6, 7, 8, 9, 10], help=value_help_text)
                 st.session_state.input_data.update({'timestamp_col': st.session_state.timestamp_col})
                 st.session_state.input_data.update({'data_col': st.session_state.data_col})
+                if st.session_state.timestamp_col == 'NA':
+                    st.session_state.x_title = '[s]'
+
         #  
         with col5:
             # st.write("**Measurement Interval**")
@@ -2159,6 +2163,9 @@ def main():
 
         if 'y_title' not in st.session_state:
             st.session_state.y_title = "Phase Data [s]"
+        
+        if 'x_title' not in st.session_state: 
+            st.session_state.x_title = "MJD"
         
         if st.session_state.selected == "Raw Data" : # This tab is to show the files and plot the raw data  
 
@@ -2393,7 +2400,7 @@ def main():
                     fig.update_xaxes(tickformat=".2f")
                     fig.update_layout(
                         title="Data of Clock",
-                        xaxis_title="MJD",
+                        xaxis_title=st.session_state.x_title,
                         yaxis_title=st.session_state.y_title,
                         yaxis=dict(tickmode='auto', nticks=10),
                         showlegend=True,
@@ -2675,7 +2682,7 @@ def main():
                     fig.update_xaxes(tickformat=".1f")
                     fig.update_layout(
                         title="Detrended Data of Clocks",
-                        xaxis_title="MJD",
+                        xaxis_title=st.session_state.x_title,
                         yaxis_title=st.session_state.y_title,
                         yaxis=dict(tickmode='auto', nticks=10),
                         showlegend=True,
@@ -2832,7 +2839,7 @@ def main():
                     fig.update_xaxes(tickformat=".1f")
                     fig.update_layout(
                         title="Offset Removed Data of Clocks",
-                        xaxis_title="MJD",
+                        xaxis_title=st.session_state.x_title,
                         yaxis_title= st.session_state.y_title,
                         yaxis=dict(tickmode='auto', nticks=10),
                         showlegend=True,
@@ -2892,7 +2899,7 @@ def main():
                 selected_clock = st.radio(":blue-background[**Select Clock for Outlier Removal**]", selected_clock_names, horizontal=True)
 
                 if selected_clock != "Combine Clocks":
-                    outlier_options = ["None", "Std_Dev Based", "Remove Selected Outliers"]
+                    outlier_options = ["None", "Std_Dev Based", "Manually select the Outliers"]
 
                     if selected_clock not in st.session_state.outlier_selection:
                         st.session_state.outlier_selection[selected_clock] = "None"
@@ -2909,6 +2916,7 @@ def main():
                     st.session_state.outlier_selection[selected_clock] = selected_outlier
 
                     clock_name = selected_clock
+                   
                     clock_data = get_latest_data(clock_name, 'offset').dropna().copy()  # Always get the original data from the 'offset' stage
 
                     if f'outlier_data_{selected_clock}' not in st.session_state:
@@ -2923,6 +2931,7 @@ def main():
                         st.plotly_chart(fig, use_container_width=True)
 
                     elif selected_outlier == 'Std_Dev Based':
+                        
                         reset_button_std = st.button("**Reset Std_Dev Filter**", key=f"reset_std_dev_{selected_clock}")
 
                         if f"std_threshold_{selected_clock}" not in st.session_state:
@@ -2930,16 +2939,32 @@ def main():
 
                         cole1, cole2, cole3, cole4 = st.columns(4)
                         with cole1:
-                            std_threshold = st.number_input(
-                                f"Standard Deviation Multiplier for {selected_clock}",
-                                min_value=0.1,
-                                max_value=100.0,
-                                value=float(st.session_state.get(f"std_threshold_{selected_clock}", 50.0)),
-                                step=0.1,
-                                format="%0.1f",
-                                key=f"std_threshold_input_{selected_clock}_{st.session_state.get(f'std_threshold_{selected_clock}')}",
-                                help="Minimum threshold limit is 0.1 time of Std Dev and Max threshold limit is 100.0 times of Std Dev in steps of 0.1"
-                            )
+                            if not reset_button_std:
+
+                                std_threshold = st.number_input(
+                                    f"Standard Deviation Multiplier for {selected_clock}",
+                                    min_value=0.1,
+                                    max_value=100.0,
+                                    # value=float(st.session_state.get(f"std_threshold_{selected_clock}", 50.0)),
+                                    value=float(st.session_state[f"std_threshold_{selected_clock}"]),
+                                    step=0.1,
+                                    format="%0.1f",
+                                    # key=f"std_threshold_input_{selected_clock}_{st.session_state.get(f'std_threshold_{selected_clock}')}",
+                                    key=f"std_threshold_input_{selected_clock}",
+                                    help="Minimum threshold limit is 0.1 time of Std Dev and Max threshold limit is 100.0 times of Std Dev in steps of 0.1"
+                                )
+                            else: 
+                                std_threshold = st.number_input(
+                                    f"Standard Deviation Multiplier for {selected_clock}",
+                                    min_value=0.1,
+                                    max_value=100.0,
+                                    value=float(50.0),
+                                    # value=float(st.session_state[f"std_threshold_{selected_clock}"]),
+                                    step=0.1,
+                                    format="%0.1f",
+                                    # key=f"std_threshold_input_{selected_clock}_{st.session_state.get(f'std_threshold_{selected_clock}')}",
+                                    key=f"std_threshold_input_{selected_clock}_02")
+
 
                         if reset_button_std:
                             std_threshold = 50.0  # Reset to default
@@ -2947,6 +2972,8 @@ def main():
                             # st.session_state[f'std_threshold_{selected_clock}'] = std_threshold
                             filtered_data, std_dev, new_std_dev = remove_outliers(initial_data, std_threshold, 'Value')
                             st.session_state[f'outlier_data_{selected_clock}'] = filtered_data
+
+                           
                         else:
                             filtered_data, std_dev, new_std_dev = remove_outliers(initial_data, std_threshold, 'Value')
                             st.session_state[f'outlier_data_{selected_clock}'] = filtered_data
@@ -2964,10 +2991,11 @@ def main():
                         st.session_state.std_threshold[selected_clock] = std_threshold
                         update_action(selected_clock, 'Outlier Filtered', f"Method: {selected_outlier}, Std Dev: {std_threshold}")
 
-                    elif selected_outlier == 'Remove Selected Outliers':
+
+                    elif selected_outlier == 'Manually select the Outliers':
                         filtered_data = st.session_state.get(f'outlier_data_{selected_clock}', clock_data.copy())
                         # filtered_data = st.session_state[f'outlier_data_{selected_clock}']
-                        st.markdown(":violet-background[**Zoom-in to the outlier and select it/them using a Box or Lasso selection**]")
+                        st.markdown(":violet-background[**Zoom-in to the outlier and select the outlier using a Box or Lasso selection**]")
                         reset_button = st.button("**Reset Outlier Removal**", key=f"reset_outliers_{selected_clock}")
                         timestamps = filtered_data['Timestamp']
                         data_to_plot = filtered_data['Value']
@@ -3025,7 +3053,7 @@ def main():
                     csv_header += f"# Start Range: {start_range}, End Range: {end_range}\n"
                     csv_header += f"# Outlier Removal Method: {selected_outlier}\n"
                     if selected_outlier == 'Std_Dev Based':
-                        csv_header += f"# Standard Deviation Multiplier: {std_threshold}\n"
+                        csv_header += f"# Standard Deviation Multiplier: {{st.session_state['std_threshold_' + selected_clock]}}\n"
                     elif selected_outlier == 'Remove Selected Outliers':
                         csv_header += "# Removed Outliers: " + ", ".join(f"{outlier:.2f}" for outlier in removed_outliers) + "\n"
                     csv_header += "\n"
@@ -3109,7 +3137,7 @@ def main():
                         fig.update_xaxes(tickformat=".1f")
                         fig.update_layout(
                             title="Outlier Removed Data of Clocks",
-                            xaxis_title="MJD",
+                            xaxis_title=st.session_state.x_title,
                             yaxis_title=st.session_state.y_title,
                             yaxis=dict(tickmode='auto', nticks=10),
                             showlegend=True,
@@ -3238,7 +3266,10 @@ def main():
                         fig = go.Figure()
                         fig.add_trace(go.Scatter(x=timestamps, y=clock_data['Value'], mode='markers', name='Raw Data', marker=dict(color='blue')))
                         fig.add_trace(go.Scatter(x=valid_timestamps, y=smoothed_data, mode='lines', name='Moving Average', line=dict(color='red')))
-                        fig.update_layout(title=f"Data for {selected_clock} with Moving Average (overlapping)", xaxis_title="Timestamp", yaxis_title="Value")
+                        fig.update_layout(title=f"Data for {selected_clock} with Moving Average (overlapping)", 
+                                          xaxis_title=st.session_state.x_title, 
+                                          yaxis_title=st.session_state.y_title,
+                                          xaxis=dict(tickformat=".1f", tickfont=dict(size=14, color="black"), exponentformat='none'),)
                         st.plotly_chart(fig, use_container_width=True)
 
                         smoothed_data_df = pd.DataFrame({'Timestamp': valid_timestamps, 'Value': smoothed_data}).reset_index(drop=True)
@@ -3278,7 +3309,10 @@ def main():
                         fig = go.Figure()
                         fig.add_trace(go.Scatter(x=timestamps, y=clock_data['Value'], mode='markers', name='Raw Data', marker=dict(color='blue')))
                         fig.add_trace(go.Scatter(x=valid_timestamps, y=smoothed_data, mode='lines', name='Moving Average', line=dict(color='red')))
-                        fig.update_layout(title=f"Data for {selected_clock} with Moving Average (non overlapping)", xaxis_title="Timestamp", yaxis_title="Value")
+                        fig.update_layout(title=f"Data for {selected_clock} with Moving Average (non overlapping)", 
+                                          xaxis_title=st.session_state.x_title, 
+                                          yaxis_title=st.session_state.y_title,
+                                          xaxis=dict(tickformat=".1f", tickfont=dict(size=14, color="black"), exponentformat='none'))
                         st.plotly_chart(fig, use_container_width=True)
 
                         smoothed_data_df = pd.DataFrame({'Timestamp': valid_timestamps, 'Value': smoothed_data}).reset_index(drop=True)
@@ -3342,7 +3376,7 @@ def main():
                             if timestamp_key in combined_df and value_key in combined_df:
                                 fig_combined.add_trace(go.Scatter(x=combined_df[timestamp_key], y=combined_df[value_key], mode='markers', name=name))
 
-                        fig_combined.update_layout(title="Combined Data", xaxis_title="MJD", yaxis_title=st.session_state.y_title, height=600)
+                        fig_combined.update_layout(title="Combined Data", xaxis_title=st.session_state.x_title, yaxis_title=st.session_state.y_title, height=600)
                         st.plotly_chart(fig_combined, use_container_width=True)
 
                         for name in [name for _, name in combined_data]:
@@ -3460,7 +3494,7 @@ def main():
                     for clock, (timestamps, values) in plot_data.items():
                         color = colors[color_idx % len(colors)]
                         marker = markers[color_idx % len(markers)]
-                        if st.session_state.data_type == 'Phase/Time Data':
+                        if st.session_state.data_type == 'Phase/Time Data (s)':
                             input_data_type = "phase"
                         elif st.session_state.data_type == 'Fractional Frequency':
                             input_data_type = "frequency"
