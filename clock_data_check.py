@@ -2178,9 +2178,15 @@ def main():
                 "Choose Clock": pd.Series(dtype='bool') })
                 
 
-            if 'checkbox_states' not in st.session_state:
-                st.session_state.checkbox_states = [False] * len(st.session_state.df_display)
+            # if 'checkbox_states' not in st.session_state:
+                # st.session_state.checkbox_states = [False] * len(st.session_state.df_display)
             
+            if 'checkbox_states' not in st.session_state:
+                st.session_state.checkbox_states = {}
+
+             # Track local checkbox states without triggering a rerun
+            local_checkbox_states = {}
+
             # Initialize or adjust session state for checkbox states
             num_rows = len(st.session_state.df_display)
             
@@ -2262,60 +2268,97 @@ def main():
                                 clk_data = normalize_values(clk_data)  # Normalize values here
                                 clk_data_json = json.dumps(clk_data)
                                 files_uploaded.append(name)
-                                clock_names.append(f"Clock {idx + 1}")  # Dynamic clock names
-                                clock_name_mapping[f"Clock {idx + 1}"] = name  # Map dynamic name to original name
+                                clock_name = f"Clock {idx + 1}"  # Dynamic clock names
+                                clock_names.append(clock_name)  # Dynamic clock names
+                                clock_name_mapping[clock_name] = name  # Map dynamic name to original name
                                 sample_data.append(clk_data_json)
-                                choose_clock.append(False)  # Default to unchecked
+                                
+                                # Use checkbox state from session state if available, or default to False
+                                is_selected = st.session_state.checkbox_states.get(clock_name, False)
+                                choose_clock.append(is_selected)
+                                
                             else:
                                 st.error(f"'Value' column not found in the DataFrame for {name}.")
-
+                                                   
+                        # Create the DataFrame once, after processing all files
                         st.session_state.df_display = pd.DataFrame({
                             "Files uploaded": files_uploaded,
                             "Clock Name": clock_names,
                             "Sample_data": sample_data,
-                            "Choose Clock": choose_clock  # Checkbox column data
+                            "Choose Clock": choose_clock
                         }).astype({"Choose Clock": "bool"})
                         
-                    
-                    # Initialize checkbox states (optional, you might handle this in data processing)
-                    if 'checkbox_states' not in st.session_state:
-                        st.session_state.checkbox_states = [False] * len(st.session_state.df_display)
-
-                    # Resynchronize checkbox states after updating df_display
-                    sync_checkbox_states()
+                        # Display the data editor
+                        edited_df = st.data_editor(
+                            st.session_state.df_display,
+                            column_config=column_config,
+                            height=300,
+                            use_container_width=True,
+                            hide_index=True,
+                            num_rows="fixed",
+                            disabled=["Files uploaded", "Sample_data"],
+                            key="edited_df"  # Unique key for this data editor instance
+                        )
+                        
+                        
+                        # Capture checkbox states into a local variable
+                        local_checkbox_states = {}
+                        for i in range(len(edited_df)):
+                            clock_name = edited_df.at[i, 'Clock Name']
+                            local_checkbox_states[clock_name] = edited_df.at[i, 'Choose Clock']
+                        
 
                 else:
                     st.error("Please upload the files", icon="⚠️")
             
-            # Update the data editor display with the new data
-            edited_df = st.data_editor(
-                st.session_state.df_display,
-                column_config=column_config,
-                height=300,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                disabled=["Files uploaded", "Sample_data"]
-            )
             
-            # Update checkbox states based on the user interactions within st.data_editor
-            for i in range(len(edited_df)):
-                clock_name = edited_df.at[i, 'Clock Name']
-                st.session_state.checkbox_states[clock_name] = edited_df.at[i, 'Choose Clock']
+            # Show the empty data frame structure when the app is loaded initially 
+            if not st.session_state.proceed and not st.session_state.total_data:
             
+                edited_df = st.data_editor(
+                    st.session_state.df_display,
+                    column_config=column_config,
+                    height=300,
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="fixed",
+                    disabled=["Files uploaded", "Sample_data"]
+                )
+                
+                # Update checkbox states based on the user interactions within st.data_editor
+                for i in range(len(edited_df)):
+                    clock_name = edited_df.at[i, 'Clock Name']
+                    st.session_state.checkbox_states[clock_name] = edited_df.at[i, 'Choose Clock']
+                
+                # # Display selected clocks based on the checkboxes clicked
+                selected_clocks = edited_df[edited_df['Choose Clock'] == True]['Clock Name'].tolist()
+
+            
+            # if selected_clocks:
+            #     st.write("Selected clocks:", ", ".join(selected_clocks))
+            # else:
+            #     st.write("No clock selected")
+
             # Sync again after user interaction
             st.session_state.df_display = edited_df
-            sync_checkbox_states()
+            # sync_checkbox_states()
+
             # st.write(f"Check box states AFTER: {st.session_state.checkbox_states}")
 
             if st.button("Process Selected Clocks"):
-                # Extract selected rows based on the 'Choose Clock' column
-                selected_data = st.session_state.df_display[st.session_state.df_display['Choose Clock'] == True]
                 
+                 # Store the local checkbox states into the session state
+                st.session_state.checkbox_states.update(local_checkbox_states)
+                
+                # Extract selected rows based on the 'Choose Clock' column from the latest edited DataFrame
+                selected_data = edited_df[edited_df['Choose Clock'] == True]
+
+                                
                 if selected_data.empty:
                     st.error("Please select at least one clock to process")
                 else:
                     st.session_state.clk_sel = True
+                    st.session_state.selected_clocks = selected_data  # Store the selection in session state
                     
                     # Collect the names of the selected clocks
                     selected_clock_names = []
