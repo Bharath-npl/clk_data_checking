@@ -3145,7 +3145,12 @@ def main():
                             })
 
                             clock_data = clock_data.rename(columns={'Timestamp': f'Timestamp_{clock_name}', 'Value': f'Outlier_Removed_Value_{clock_name}'})
-                            combined_data.append(clock_data)
+                            # combined_data.append(clock_data)
+                            if isinstance(clock_data, pd.DataFrame):
+                                combined_data.append((clock_data, clock_name))
+                            else:
+                                st.error(f"clock_data for {clock_name} is not a DataFrame before appending. It is of type {type(clock_data)}")
+
 
                             outlier_method = st.session_state.outlier_selection.get(clock_name, "None")
                             if outlier_method == "Std_Dev Based":
@@ -3165,11 +3170,23 @@ def main():
 
 
                     if combined_data:
-                        combined_df = pd.concat(combined_data, axis=1)
+                        # Extract only the DataFrame objects from the tuples in combined_data
+                        dataframes_to_concat = [clock_data for clock_data, clock_name in combined_data]
+                        
+                        # Now concatenate the DataFrames along the columns
+                        if dataframes_to_concat:
+                            combined_df = pd.concat(dataframes_to_concat, axis=1)
+
+                        else:
+                            st.write("No data to concatenate.")
 
                         fig = go.Figure()
-                        for clock_data, row in zip(combined_data, st.session_state.df_display.iterrows()):
-                            clock_name = row[1]["Clock Name"]
+                        # for clock_data, row in zip(combined_data, st.session_state.df_display.iterrows()):
+                        for clock_data, clock_name in combined_data:
+                            # clock_name = row[1]["Clock Name"]
+                            # Ensure that the Timestamp column is treated as numeric
+                            clock_data[f'Timestamp_{clock_name}'] = pd.to_numeric(clock_data[f'Timestamp_{clock_name}'], errors='coerce')
+                            
                             fig.add_trace(go.Scatter(
                                 x=clock_data[f'Timestamp_{clock_name}'],
                                 y=clock_data[f'Outlier_Removed_Value_{clock_name}'],
