@@ -395,7 +395,7 @@ def process_inputs(files):
                     timestamps = set(df['Timestamp'].tolist())
 
                     if all_timestamps & timestamps:
-                        st.error("Each file has same Timestamps, it means same clock at same time records different measurements. Each file could be of different clock, please check !.\n If you still want to continue please select TIMESTAMP column to be NA ")
+                        st.error("The time stamps in the files are matching which confilcts with the input that they are of same clock. Each file could be of different clock, please check !.\n If you still want to continue ignoring the timestamps please select TIMESTAMP column to be NA ")
                         return {}
                     else:
                         # Write the code here to concatenate the df 
