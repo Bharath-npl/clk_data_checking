@@ -264,10 +264,22 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
     
     # Clean the lines to remove unwanted characters and handle text formatting
     cleaned_lines = []
+    empty_line_count = 0
+
+
     for i, line in enumerate(lines):
         line = line.strip()  # Remove leading/trailing whitespace
-        if line and not line.lstrip().startswith(('#', '<', '"', '@')):  # Skip comment lines and empty lines
-            cleaned_lines.append(line)
+        # Count empty lines
+        if not line:
+            empty_line_count += 1
+        else:
+            empty_line_count = 0  # Reset counter when a non-empty line is found
+        
+        if empty_line_count <= 10:  # Allow up to 10 consecutive empty lines
+            if line and not line.lstrip().startswith(('#', '<', '"', '@')):  # Skip comment lines and empty lines
+                cleaned_lines.append(line)
+        else:
+            break  # Stop if more than 10 consecutive empty lines are found
 
     if not cleaned_lines:
         st.error(f"No valid data found in file {file.name}.")
@@ -275,25 +287,69 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
 
     first_valid_index = 0  # We now have cleaned lines
     # st.write(f"First valid index: {first_valid_index}, Total cleaned lines: {len(cleaned_lines)}")
+     # Define possible configurations to try for reading the file
+    configurations = [
+        {'sep': ',', 'header': 0},      # Assume the file has headers and is comma-separated
+        {'sep': ',', 'header': None},   # Assume the file has no headers and is comma-separated
+        {'sep': '\s+', 'header': 0},    # Assume the file has headers and is space-separated
+        {'sep': '\s+', 'header': None}  # Assume the file has no headers and is space-separated
+    ]
+
 
     # Read the file into a pandas DataFrame from the cleaned lines
-    try:
-        if timestamp_col_index != 'NA':
-            df = pd.read_csv(StringIO('\n'.join(cleaned_lines[first_valid_index:])), sep='\s+',
-                             header=None, engine='python', usecols=[timestamp_col_index, value_col_index])
-        else:  # If the timestamp is NA
-            df = pd.read_csv(StringIO('\n'.join(cleaned_lines[first_valid_index:])), sep='\s+',
-                             header=None, engine='python', usecols=[value_col_index])
+    df = None
+    for config in configurations:
+       
+        try:
+            if timestamp_col_index != 'NA':
+                # Attempt to read the cleaned lines into a DataFrame, skipping comments
+                df = pd.read_csv(StringIO('\n'.join(cleaned_lines)), sep=config['sep'], header=config['header'], engine='python', comment='#', usecols=[timestamp_col_index, value_col_index])
+                
+                 # Check for column count consistency
+                expected_columns = len(df.columns)
+                inconsistent_rows = df[df.apply(lambda row: len(row) != expected_columns, axis=1)]
 
-            # Generate the timestamp values starting from 1 to the length of the values column
-            # df['Timestamp'] = range(1, len(df) + 1)
-            # Generate the timestamp values starting from 0 with the specified measurement interval
-            df['Timestamp'] = [i * st.session_state.tau0 for i in range(len(df))]
-            df = df[['Timestamp', value_col_index]]  # Reorder columns to place 'Timestamp' first
+                if not inconsistent_rows.empty:
+                    print(f"Inconsistent rows found with configuration {config}: {inconsistent_rows}")
+                    continue  # Skip this configuration if there are inconsistent rows
+                
+                # Ensure that the columns exist
+                if len(df.columns) > max(timestamp_col_index, value_col_index):
+                    df = df.iloc[:, [timestamp_col_index, value_col_index]]
+                else:
+                    print(f"Config {config} skipped due to missing columns.")
+                    continue
 
-    except Exception as e:
-        st.error(f"Failed to read data from the assigned columns in file {file.name}. Error: {str(e)}")
-        return None       
+            else:  # If the timestamp is NA
+                df = pd.read_csv(StringIO('\n'.join(cleaned_lines)), sep=config['sep'], header=config['header'], engine='python',comment='#', usecols=[value_col_index])
+
+                # Generate the timestamp values starting from 1 to the length of the values column
+                df['Timestamp'] = range(1, len(df) + 1)
+                # Generate the timestamp values starting from 0 with the specified measurement interval
+    
+                # st.write(f"Value column Index: {value_col_index}")
+                # st.write(f" Length of the columns: {len(df.columns)}")
+                # st.write("My df:")
+                # st.write(df)
+                # Ensure that the value column exists
+                if len(df.columns) > value_col_index:
+                    df['Timestamp'] = [i * st.session_state.tau0 for i in range(len(df))]
+                    df = df[['Timestamp', value_col_index]]  # Reorder columns to place 'Timestamp' first
+                else:
+                    st.write(f"Config {config} skipped due to missing value column.")
+                    continue
+
+             # Check if the first row might be incorrectly treated as a header
+            if config['header'] is None and df.iloc[0].isnull().all():
+                df.columns = [f'Column_{i}' for i in range(df.shape[1])]
+                df = df.iloc[1:].reset_index(drop=True)  # Drop the first row and reset index
+                        
+            if not df.empty:
+                break  # If the DataFrame is successfully read and is not empty, exit the loop
+
+        except Exception as e:
+            st.error(f"Failed to read data from the assigned columns in file {file.name}. Error: {str(e)}")
+            return None     
 
     if df.empty:
         st.error(f"The file {file.name} does not have enough columns based on the selected indices.")
@@ -337,8 +393,26 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
 def check_column_consistency(file):
     try:
         # Assuming the file is decoded as 'utf-8', which might need to be adjusted based on the file encoding
+        # Decode the file content, assuming 'utf-8'
         content = StringIO(file.getvalue().decode('utf-8'))
-        sample_df = pd.read_csv(content, sep='\s+', nrows=25)  # Using regex to handle multiple spaces
+        
+        # Attempt to read the file with multiple configurations
+        separators = [',', '\s+']  # Trying comma-separated and space-separated values
+        sample_df = None
+        
+        for sep in separators:
+            try:
+                # Try reading the file with the current separator
+                sample_df = pd.read_csv(content, sep=sep, comment='#', nrows=25, engine='python')
+                break  # Exit the loop if the file is successfully read
+            except pd.errors.ParserError as e:
+                print(f"Failed with separator '{sep}': {e}")
+                continue  # Try the next separator if there's an error
+
+        if sample_df is None:
+            raise ValueError("Could not read the file with any known separator.")
+        
+        # Get the number of columns in the data
         num_columns = len(sample_df.columns)
         return num_columns, None
     except Exception as e:
@@ -2517,12 +2591,19 @@ def main():
                     # Apply the formatting function only to the "Value" columns
                     combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
 
-                    csv_data = csv_header + combined_df.to_csv(index=False, lineterminator='\n')
+                    # Manually add '#' before the column headers
+                    csv_columns = "#" + ",".join(combined_df.columns)  # Add # at the start of the column headers
+
+                    # Convert DataFrame to CSV without the default header
+                    csv_data = combined_df.to_csv(index=False, lineterminator='\n', header=False)
+
+                    # Combine the header and the data
+                    csv = csv_header + csv_columns + '\n' + csv_data
 
                     # Add download button
                     st.download_button(
                         label="Download Combined Data as CSV",
-                        data=csv_data,
+                        data=csv,
                         file_name='combined_data_range.csv',
                         mime='text/csv',
                     )
@@ -2812,8 +2893,7 @@ def main():
                         for detrend in detrend_info:
                             csv_header += f"# Clock Name: {detrend['Clock Name']}, Trend: {detrend['Trend']}, Equation: {detrend['Equation']}\n"
                     csv_header += "# Data\n"
-                    
-                    
+                                        
                     # Convert DataFrame to CSV format
                     # Convert the columns data to proper scientific format 
                     value_columns = [col for col in combined_df.columns if 'Detrended_Value' in col]
@@ -2821,12 +2901,18 @@ def main():
                     # Apply the formatting function only to the "Value" columns
                     combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
 
-                    # combined_df = combined_df.round(2)
-                    csv_data_detrend = csv_header + combined_df.to_csv(index=False, lineterminator='\n')
+                    # Manually add '#' before the column headers
+                    csv_columns = "#" + ",".join(combined_df.columns)  # Add # at the start of the column headers
+
+                    # Convert DataFrame to CSV without the default header
+                    csv_data = combined_df.to_csv(index=False, lineterminator='\n', header=False)
+
+                    # Combine the header and the data
+                    csv = csv_header + csv_columns + '\n' + csv_data
 
                     st.download_button(
                         label="Download Combined Data as CSV",
-                        data=csv_data_detrend,
+                        data=csv,
                         file_name='combined_detrended_data.csv',
                         mime='text/csv',
                     )
@@ -2960,13 +3046,21 @@ def main():
                             csv_header += "\n"
                     csv_header += "# Data\n"
 
-                    # Convert the columns datra to proper scientific format 
+                    # Convert the columns data to proper scientific format 
                     value_columns = [col for col in combined_data_df.columns if 'Offset_Removed_Value' in col]
                     
                     # Apply the formatting function only to the "Value" columns
                     combined_data_df[value_columns] = combined_data_df[value_columns].applymap(format_scientific2)
 
-                    csv = csv_header + combined_data_df.to_csv(index=False)
+                    # Manually add '#' before the column headers
+                    csv_columns = "#" + ",".join(combined_data_df.columns)  # Add # at the start of the column headers
+
+                    # Convert DataFrame to CSV without the default header
+                    csv_data = combined_data_df.to_csv(index=False, lineterminator='\n', header=False)
+
+                    # Combine the header and the data
+                    csv = csv_header + csv_columns + '\n' + csv_data
+
                     st.download_button(label="Download Combined Data as CSV", data=csv, file_name='combined_offset_removed_data.csv', mime='text/csv')
 
                     st.session_state.data['combined_clocks']['outlier'] = combined_data_df.copy()
@@ -3078,7 +3172,6 @@ def main():
                         st.session_state.std_threshold[selected_clock] = std_threshold
                         update_action(selected_clock, 'Outlier Filtered', f"Method: {selected_outlier}, Std Dev: {std_threshold}")
 
-
                     elif selected_outlier == 'Manually select the Outliers':
                         filtered_data = st.session_state.get(f'outlier_data_{selected_clock}', clock_data.copy())
                         # filtered_data = st.session_state[f'outlier_data_{selected_clock}']
@@ -3143,14 +3236,21 @@ def main():
                         csv_header += f"# Standard Deviation Multiplier: {{st.session_state['std_threshold_' + selected_clock]}}\n"
                     elif selected_outlier == 'Remove Selected Outliers':
                         csv_header += "# Removed Outliers: " + ", ".join(f"{outlier:.2f}" for outlier in removed_outliers) + "\n"
-                    csv_header += "\n"
+                    
+                    # Add the CSV column titles explicitly with the special character
+                    csv_header += "# Timestamp,Outlier_removed\n"
 
                     # Prepare the CSV data with only Timestamp and renamed Value column
                     formatted_data = st.session_state[f'outlier_data_{selected_clock}'][['Timestamp', 'Value']].copy()
+                    
                     # Format the 'Value' column in scientific notation
                     formatted_data['Value'] = formatted_data['Value'].map(lambda x: f"{x:.2e}")
                     formatted_data = formatted_data.rename(columns={'Value': 'Outlier_removed'})
-                    csv_data = formatted_data.to_csv(index=False)
+                    
+                    # Convert the data to CSV without including the header
+                    csv_data = formatted_data.to_csv(index=False,header=False)
+                    
+                    # Concatenate the header and data
                     csv_content = csv_header + csv_data
 
                     # Add the download button
@@ -3286,13 +3386,21 @@ def main():
 
                         combined_df = combined_df[columns_to_keep]
 
-                        # Convert the columns datra to proper scientific format 
+                        # Convert the columns data to proper scientific format 
                         value_columns = [col for col in combined_df.columns if 'Outlier_Removed_Value' in col]
                         
                         # Apply the formatting function only to the "Value" columns
                         combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
+                        
+                        # Manually modify the column headers to add the "#" at the start
+                        csv_columns = "#" + ",".join(combined_df.columns)  # Add # at the start of the column headers
 
-                        csv = csv_header + combined_df.to_csv(index=False, lineterminator='\n')
+                        # Combine the header and the data
+                        csv_data = combined_df.to_csv(index=False, lineterminator='\n', header=False)  # Do not write headers automatically
+
+                        # Combine the CSV header and the data with modified column headers
+                        csv = csv_header + csv_columns + '\n' + csv_data
+
                         st.download_button(
                             label="Download Combined Data as CSV",
                             data=csv,
@@ -3523,7 +3631,14 @@ def main():
                         # Apply the formatting function only to the "Value" columns
                         combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
 
-                        csv = csv_header + combined_df.to_csv(index=False)
+                        # Manually add '#' before the column headers
+                        csv_columns = "#" + ",".join(combined_df.columns)  # Add # at the start of the column headers
+
+                        # Convert DataFrame to CSV without the default header
+                        csv_data = combined_df.to_csv(index=False, lineterminator='\n', header=False)
+
+                        # Combine the header and the data
+                        csv = csv_header + csv_columns + '\n' + csv_data
 
                         # Add download button
                         st.download_button(label="Download Combined Data as CSV", data=csv, file_name='combined_data.csv', mime='text/csv')
