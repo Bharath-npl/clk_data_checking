@@ -586,6 +586,8 @@ def initialize_state():
         "OADEV": {},
         "TDEV": {}
     }
+    st.session_state.manual_out_fil = False
+
 
 # Define a function to create an empty DataFrame if not already in session state
 def initialize_out_display():
@@ -2226,11 +2228,21 @@ def main():
         
         # tab1, tab2, tab3 = st.tabs(["Raw Data", "Analyse", "Out come"])
         # The order of the functinality shall be raw_data -> data_range -> detrend -> offset -> outlier -> smoothing -> stability.
+        
+        
+        # Set a default value for the selected tab in session state, if it doesn't exist
+                
+        if st.session_state.manual_out_fil:
+            default_tab = 4
+        else:
+            default_tab = 0
+          
+      
         st.session_state.selected = option_menu(
             menu_title = None,
             options = ["Raw Data", "Data Range","Detrend", "Offset", "Outlier", "Smoothing", "Stability", "Out come"],
             icons=["database-fill-up", "arrows-collapse-vertical", "alt","graph-up", "activity", "filter", "boxes"],
-            default_index =0,
+            default_index = default_tab,
             orientation= "horizontal",
             styles={
             "container": {"padding": "0!important", "background-color": "#fafafa"},
@@ -2258,11 +2270,6 @@ def main():
         if 'x_title' not in st.session_state: 
             st.session_state.x_title = "MJD"
         
-        if 'manual_out_fil' not in st.session_state:
-            st.session_state.manual_out_fil = False
-        
-        if st.session_state.manual_out_fil:
-            st.session_state.selected = "Outlier"
 
         if st.session_state.selected == "Raw Data" : # This tab is to show the files and plot the raw data  
 
@@ -3991,8 +3998,8 @@ def main():
                             
 
                         if clock_name in st.session_state.smoothing_method:
-                            smoothing_method = st.session_state.smoothing_method[clock_name]
-                            window_size = st.session_state.window_size[clock_name]
+                            smoothing_method = st.session_state[f'smoothing_method_{clock_name}']
+                            window_size = st.session_state[f'window_size_{clock_name}']
                             smoothing_info = f"Method: {smoothing_method}<br>Window Size: {window_size}"
                             update_action(clock_name, 'Smoothed', smoothing_info)
                             
