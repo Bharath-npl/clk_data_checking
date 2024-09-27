@@ -2,9 +2,10 @@
 # *********************************************
 # ****************** Clock Data Checking ******
 
-
-# to tune this code in your local PC use the follwoing command **
-# streamlit run .\clk_data_checking.py --server.port 8888
+# Please Install streamlit library to run the following code 
+# this app is developed in streamlit version 1.37.1
+# to run this code in your local PC use the follwoing command **
+# streamlit run .\clk_data_check.py --server.port 8888
 
 import streamlit as st
 import pandas as pd
