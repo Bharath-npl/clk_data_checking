@@ -369,7 +369,8 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
 
     # Convert 'Timestamp' column to integers and 'Value' column to floats
     if 'Timestamp' in df.columns:
-        df['Timestamp'] = df['Timestamp'].apply(lambda x: int(float(str(x).replace(',', ''))))
+        #df['Timestamp'] = df['Timestamp'].apply(lambda x: int(float(str(x).replace(',', ''))))
+        df['Timestamp'] = df['Timestamp'].apply(lambda x: float(str(x).replace(',', '')))
 
     df['Value'] = df['Value'].apply(lambda x: float(str(x).replace(',', '').replace(' ', '')))  # Convert to float
 
