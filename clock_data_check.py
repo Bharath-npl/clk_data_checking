@@ -4000,8 +4000,8 @@ def main():
                             
 
                         if clock_name in st.session_state.smoothing_method:
-                            smoothing_method = st.session_state[f'smoothing_method_{clock_name}']
-                            window_size = st.session_state[f'window_size_{clock_name}']
+                            smoothing_method = st.session_state.smoothing_method[clock_name] #Corrected line.
+                            window_size = st.session_state.window_size[clock_name]
                             smoothing_info = f"Method: {smoothing_method}<br>Window Size: {window_size}"
                             update_action(clock_name, 'Smoothed', smoothing_info)
                             
