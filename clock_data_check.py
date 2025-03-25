@@ -332,12 +332,12 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
                 # st.write("My df:")
                 # st.write(df)
                 # Ensure that the value column exists
-                if len(df.columns) > value_col_index:
-                    df['Timestamp'] = [i * st.session_state.tau0 for i in range(len(df))]
-                    df = df[['Timestamp', value_col_index]]  # Reorder columns to place 'Timestamp' first
-                else:
+                #if len(df.columns) > value_col_index:
+                df['Timestamp'] = [i * st.session_state.tau0 for i in range(len(df))]
+                df = df[['Timestamp', value_col_index]]  # Reorder columns to place 'Timestamp' first
+                #else:
                     # st.write(f"Config {config} skipped due to missing value column.")
-                    continue
+                #    continue
 
              # Check if the first row might be incorrectly treated as a header
             if config['header'] is None and df.iloc[0].isnull().all():
