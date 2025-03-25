@@ -688,7 +688,7 @@ def render_html_table(df, styles):
 
 def convert_df_to_text(df, delimiter='; '):
     # Replace <br> tags with the specified delimiter
-    df = df.applymap(lambda x: x.replace('<br>', delimiter) if isinstance(x, str) else x)
+    df = df.map(lambda x: x.replace('<br>', delimiter) if isinstance(x, str) else x)
     
     output = StringIO()
     df.to_csv(output, sep=' ', index=False, header=False)
@@ -2606,7 +2606,7 @@ def main():
                     value_columns = [col for col in combined_df.columns if 'Range_Selected' in col]
                     
                     # Apply the formatting function only to the "Value" columns
-                    combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
+                    combined_df[value_columns] = combined_df[value_columns].map(format_scientific2)
 
                     # Manually add '#' before the column headers
                     csv_columns = "#" + ",".join(combined_df.columns)  # Add # at the start of the column headers
@@ -2916,7 +2916,7 @@ def main():
                     value_columns = [col for col in combined_df.columns if 'Detrended_Value' in col]
                     
                     # Apply the formatting function only to the "Value" columns
-                    combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
+                    combined_df[value_columns] = combined_df[value_columns].map(format_scientific2)
 
                     # Manually add '#' before the column headers
                     csv_columns = "#" + ",".join(combined_df.columns)  # Add # at the start of the column headers
@@ -3064,7 +3064,7 @@ def main():
                     value_columns = [col for col in combined_data_df.columns if 'Value' in col]
 
                     # Apply the formatting function only to the "Value" columns
-                    combined_data_df[value_columns] = combined_data_df[value_columns].applymap(format_scientific2)
+                    combined_data_df[value_columns] = combined_data_df[value_columns].map(format_scientific2)
 
                     # Manually add '#' before the column headers
                     csv_columns = "#" + ",".join(combined_data_df.columns)  # Add # at the start of the column headers
@@ -3480,7 +3480,7 @@ def main():
                         value_columns = [col for col in combined_df.columns if 'Outlier_Removed_Value' in col]
                         
                         # Apply the formatting function only to the "Value" columns
-                        combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
+                        combined_df[value_columns] = combined_df[value_columns].map(format_scientific2)
                         
                         # Manually modify the column headers to add the "#" at the start
                         csv_columns = "#" + ",".join(combined_df.columns)  # Add # at the start of the column headers
@@ -3719,7 +3719,7 @@ def main():
                         # print("Value columns to be formatted:", value_columns)
 
                         # Apply the formatting function only to the "Value" columns
-                        combined_df[value_columns] = combined_df[value_columns].applymap(format_scientific2)
+                        combined_df[value_columns] = combined_df[value_columns].map(format_scientific2)
 
                         # Manually add '#' before the column headers
                         csv_columns = "#" + ",".join(combined_df.columns)  # Add # at the start of the column headers
