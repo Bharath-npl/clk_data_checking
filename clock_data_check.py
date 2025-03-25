@@ -5,7 +5,7 @@
 # Please Install streamlit library to run the following code 
 # this app is developed in streamlit version 1.37.1
 # to run this code in your local PC use the follwoing command **
-# streamlit run .\clk_data_check.py --server.port 8888
+# streamlit run .\clock_data_check.py --server.port 8888
 
 import streamlit as st
 import pandas as pd
@@ -290,9 +290,9 @@ def process_file(file, timestamp_col_index, value_col_index, data_type, data_sca
     # st.write(f"First valid index: {first_valid_index}, Total cleaned lines: {len(cleaned_lines)}")
      # Define possible configurations to try for reading the file
     configurations = [
-        {'sep': '\s+', 'header': None},  # Assume the file has no headers and is space-separated
+        {'sep': '\\s+', 'header': None},  # Assume the file has no headers and is space-separated
         {'sep': ',', 'header': None},   # Assume the file has no headers and is comma-separated
-        {'sep': '\s+', 'header': 0},    # Assume the file has headers and is space-separated
+        {'sep': '\\s+', 'header': 0},    # Assume the file has headers and is space-separated
         {'sep': ',', 'header': 0},      # Assume the file has headers and is comma-separated
     ]
 
@@ -398,7 +398,7 @@ def check_column_consistency(file):
         content = StringIO(file.getvalue().decode('utf-8'))
         
         # Attempt to read the file with multiple configurations
-        separators = [',', '\s+']  # Trying comma-separated and space-separated values
+        separators = [',', '\\s+']  # Trying comma-separated and space-separated values
         sample_df = None
         
         for sep in separators:
