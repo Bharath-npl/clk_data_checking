@@ -3127,8 +3127,9 @@ def main():
 
                     removed_outliers = []
                     if selected_outlier == 'None':
-                        data_to_plot = initial_data['Value']
-                        timestamps = initial_data['Timestamp']
+                        initial_data_none  = get_latest_data(clock_name, 'outlier').dropna().copy()  # Fetch the data initially
+                        data_to_plot = initial_data_none['Value']
+                        timestamps = initial_data_none['Timestamp']
                         fig = create_plots(timestamps, data_to_plot)
                         st.plotly_chart(fig, use_container_width=True)
 
@@ -3679,6 +3680,7 @@ def main():
                                 fig_combined.add_trace(go.Scatter(x=combined_df[timestamp_key], y=combined_df[value_key], mode='markers', name=name))
 
                         fig_combined.update_layout(title="Combined Data", xaxis_title=st.session_state.x_title, yaxis_title=st.session_state.y_title, height=600)
+                        fig_combined.update_xaxes(tickformat=".1f")
                         st.plotly_chart(fig_combined, use_container_width=True)
 
                         for name in [name for _, name in combined_data]:
