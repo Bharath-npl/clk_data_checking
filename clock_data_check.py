@@ -29,9 +29,9 @@ from streamlit_plotly_events import plotly_events
 
 
 
-st.set_page_config(page_title="Clock Data Analysis and Visualization", page_icon=":stopwatch:", layout="wide")
+st.set_page_config(page_title="Clock Data Checking", page_icon=":stopwatch:", layout="wide")
 st.markdown('<style>div.block-container{padding-top:1rem;}</style>', unsafe_allow_html=True)
-st.title(":clock10: Clock Data Analysis and Visualization")
+st.title(":clock10: Clock Data Checking")
 
 
 
